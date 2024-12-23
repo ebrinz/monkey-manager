@@ -1,0 +1,16 @@
+services:
+  sandbox:
+    image: sandbox-image
+    volumes:
+      - ${INPUT_DIR}:/files:ro  # Input directory (read-only)
+      - ${OUTPUT_DIR}:/output   # Output directory (read/write)
+      - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro  # Mapping file (read-only)
+    environment:
+      - PYTHONUNBUFFERED=1
+    network_mode: none  # Disable network access
+    security_opt:
+      - no-new-privileges:true           # Prevent privilege escalation
+      - seccomp=unconfined # maybe add seccomp:./seccomp.json  for Custom Seccomp profile 
+      - apparmor:docker-default          # Use AppArmor's default profile
+    command: ["python", "/app/process_files.py", "/files", "/output", "/mapping/mapping_file.xlsx"]
+    restart: "no"

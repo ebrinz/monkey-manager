@@ -1,0 +1,6 @@
+inputs/
+!inputs/.gitkeep
+outputs/
+!outputs/.gitkeep
+mappings/
+!mappings/.gitkeep
