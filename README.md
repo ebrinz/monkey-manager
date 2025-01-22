@@ -23,9 +23,7 @@ This repository contains a Docker-based workflow for renaming and sanitizing PDF
    - Each recognized file is renamed to `R{respondentID}-{columnNumber}.{ext}`.
 
 4. **Single-Pass Renaming**  
-   - Hidden or system files (`.DS_Store`, `.gitkeep`) are **skipped**.  
    - **Unrecognized** files (not in spreadsheet) are prefixed with `NORESPID_...`.  
-   - **No double-prefixing** logic—files are processed once, preventing `NORESPID_NORESPID_...`.
 
 5. **Final CSV Log**  
    - For **each** file processed, one line is added to the CSV with **two columns**:  
