@@ -1,9 +1,48 @@
 import os
 import sys
+import zipfile
+import shutil
 import pandas as pd
 import fitz  # PyMuPDF
 from oletools.olevba import VBA_Parser
 from docx import Document
+import datetime
+import csv
+
+###############################################################################
+# 1. File copying / extraction
+###############################################################################
+
+def extract_zip_file(zip_file_path, extract_dir):
+    try:
+        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+        print(f"Extracted {zip_file_path} into {extract_dir}")
+    except Exception as e:
+        print(f"Error extracting {zip_file_path}: {e}")
+
+def prepare_input_files(input_dir, work_dir):
+    """
+    Copies or extracts all files from `input_dir` (read-only) into `work_dir` (writable).
+    """
+    for root, dirs, files in os.walk(input_dir):
+        rel_path = os.path.relpath(root, input_dir)
+        target_root = os.path.join(work_dir, rel_path)
+        os.makedirs(target_root, exist_ok=True)
+
+        for fname in files:
+            src_path = os.path.join(root, fname)
+            # If it's a ZIP, extract it; otherwise, just copy
+            if fname.lower().endswith('.zip'):
+                extract_zip_file(src_path, target_root)
+            else:
+                dest_path = os.path.join(target_root, fname)
+                shutil.copy2(src_path, dest_path)
+                print(f"Copied {fname} to {dest_path}")
+
+###############################################################################
+# 2. PDF/DOCX sanitization
+###############################################################################
 
 def sanitize_pdf(input_file):
     try:
@@ -22,74 +61,212 @@ def sanitize_docx(input_file):
         if vba_parser.detect_vba_macros():
             print(f"Warning: Macros detected in {input_file}. Proceeding with text extraction.")
         doc = Document(input_file)
-        text = "\n".join([p.text for p in doc.paragraphs])
-        return text
+        return "\n".join(p.text for p in doc.paragraphs)
     except Exception as e:
         print(f"Error processing DOCX {input_file}: {e}")
         return None
 
-def process_files(input_dir, output_dir, mapping_file):
-    # Load the spreadsheet
+###############################################################################
+# 3. Spreadsheet Utility
+###############################################################################
+
+def possible_filenames(name: str):
+    """
+    Generate possible variants:
+      - The raw name
+      - If '%20' in name => yield name with '%20' replaced by space
+      - If ' ' in name => yield name with ' ' replaced by '%20'
+    """
+    yield name
+    if '%20' in name:
+        yield name.replace('%20', ' ')
+    if ' ' in name:
+        yield name.replace(' ', '%20')
+
+def parse_column_number(col_name: str) -> str:
+    """
+    If col_name = 'File#3', returns '3'.
+    """
+    return col_name.replace("File#", "")
+
+def build_spreadsheet_lookup(df):
+    """
+    Single dictionary: {filename_variant -> (respondentID, colNum)}
+    where filename_variant handles 'spaces' vs '%20'.
+    """
+    lookup = {}
+    for _, row in df.iterrows():
+        # Skip any row missing Respondent ID
+        if pd.isna(row["Respondent ID"]):
+            print("Row missing Respondent ID -> skipping")
+            continue
+
+        # Convert respondent ID to int so there's no .0
+        respondent_id = int(float(row["Respondent ID"]))
+
+        # For columns File#1..File#20
+        for i in range(1, 21):
+            col_name = f"File#{i}"
+            val = row.get(col_name, None)
+            if isinstance(val, str) and val.strip():
+                col_num = parse_column_number(col_name)
+                # Produce all variants
+                for variant in possible_filenames(val.strip()):
+                    lookup[variant] = (respondent_id, col_num)
+    return lookup
+
+###############################################################################
+# 4. Main Process
+###############################################################################
+
+def process_files(input_dir, output_dir, mapping_dir, mapping_file):
+    """
+    Single-pass approach:
+      1) Copy/extract files from `input_dir` => /tmp/work
+      2) Read spreadsheet => build single lookup
+      3) Single pass:
+         - If file is .DS_Store / .gitkeep => skip entirely (don't rename, don't CSV)
+         - If file starts with '.' => log "SKIPPED (hidden/system)" in CSV
+         - If file in spreadsheet => rename => R<respondentID>-<colNum>.<ext>, sanitize => .txt if PDF/DOCX
+         - else => rename => NORESPID_<file>, sanitize => .txt if PDF/DOCX
+         - add exactly 1 line to the CSV: old_filename => final_filename
+    """
+
+    # 1. Copy everything to /tmp/work
+    work_dir = "/tmp/work"
+    os.makedirs(work_dir, exist_ok=True)
+    prepare_input_files(input_dir, work_dir)
+
+    # 2. Read spreadsheet
     if mapping_file.endswith(".csv"):
-        data = pd.read_csv(mapping_file, sep="\t")
+        df = pd.read_csv(mapping_file, sep="\t")
     elif mapping_file.endswith(".xlsx"):
-        data = pd.read_excel(mapping_file)
+        df = pd.read_excel(mapping_file)
     else:
-        print("Error: Unsupported file format for mapping file. Use .csv or .xlsx.")
+        print("Error: Mapping file must be .csv or .xlsx")
         return
 
-    # Ensure output directory exists
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # Build single dictionary
+    spreadsheet_lookup = build_spreadsheet_lookup(df)
 
-    # Iterate over rows in the spreadsheet
-    for index, row in data.iterrows():
-        respondent_id = row["Respondent ID"]
-        files = [f"File#{i}" for i in range(1, 21)]
+    # Ensure output folder exists
+    os.makedirs(output_dir, exist_ok=True)
 
-        file_counter = 0
-        for file_column in files:
-            file_name = row.get(file_column, None)
-            if pd.isna(file_name) or not file_name:
+    # We'll record (old_filename, final_filename) here
+    filename_mappings = []
+
+    # 3. Single pass: rename + sanitize
+    filecount = 0
+    for root, dirs, files in os.walk(work_dir):
+        for fname in files:
+            # 3a. Skip .DS_Store / .gitkeep entirely
+            if fname in [".DS_Store", ".gitkeep"]:
+                print(f"Skipping {fname} entirely (not in CSV).")
                 continue
 
-            input_file = os.path.join(input_dir, file_name)
-            if not os.path.exists(input_file):
-                print(f"Warning: File {input_file} not found for Respondent ID {respondent_id}. Skipping.")
+            filecount += 1
+            print(filecount, ": ", fname)
+
+            old_path = os.path.join(root, fname)
+            old_name = fname  # For CSV record
+
+            # 3b. If it's hidden/system (starts with '.'), log "SKIPPED" in CSV
+            if fname.startswith('.'):
+                print(f"Skipping hidden/system file: {old_name}")
+                filename_mappings.append((old_name, "SKIPPED (hidden/system)"))
                 continue
 
-            if file_name.endswith(".pdf"):
-                text = sanitize_pdf(input_file)
-            elif file_name.endswith(".docx"):
-                text = sanitize_docx(input_file)
+            base, ext = os.path.splitext(fname)
+            ext_lower = ext.lower()
+
+            # 3c. Check if in spreadsheet
+            match = spreadsheet_lookup.get(fname, None)
+            if match:
+                # In spreadsheet => rename => R<respID>-<colNum>.<ext>
+                respondent_id, col_num = match
+                new_name = f"R{respondent_id}-{col_num}{ext}"
+                new_path = os.path.join(root, new_name)
+                os.rename(old_path, new_path)
+
+                # Sanitize if PDF/DOCX
+                final_name = new_name
+                text = None
+                if ext_lower == ".pdf":
+                    text = sanitize_pdf(new_path)
+                elif ext_lower == ".docx":
+                    text = sanitize_docx(new_path)
+
+                if text:
+                    # final => .txt
+                    txt_filename = f"R{respondent_id}-{col_num}.txt"
+                    txt_path = os.path.join(output_dir, txt_filename)
+                    with open(txt_path, "w", encoding="utf-8") as out_f:
+                        out_f.write(text)
+                    final_name = txt_filename
+
+                print(f"Renamed {old_name} -> {final_name}")
+                filename_mappings.append((old_name, final_name))
+
             else:
-                print(f"Unsupported file format: {file_name}")
-                continue
+                # Not in spreadsheet => rename => NORESPID_<file>
+                cleaned_fname = base.replace(" ", "_") + ext
+                new_name = f"NORESPID_{cleaned_fname}"
+                new_path = os.path.join(root, new_name)
+                os.rename(old_path, new_path)
 
-            if text:
-                file_counter += 1
-                output_file = os.path.join(
-                    output_dir, f"{respondent_id}-{chr(96 + file_counter)}.txt"
-                )
-                with open(output_file, "w", encoding="utf-8") as f:
-                    f.write(text)
-                print(f"Saved sanitized text to {output_file}")
+                # Possibly sanitize
+                final_name = new_name
+                text = None
+                if ext_lower == ".pdf":
+                    text = sanitize_pdf(new_path)
+                elif ext_lower == ".docx":
+                    text = sanitize_docx(new_path)
+
+                if text:
+                    txt_filename = f"NORESPID_{base.replace(' ', '_')}.txt"
+                    txt_path = os.path.join(output_dir, txt_filename)
+                    with open(txt_path, "w", encoding="utf-8") as out_f:
+                        out_f.write(text)
+                    final_name = txt_filename
+
+                print(f"Renamed {old_name} -> {final_name}")
+                filename_mappings.append((old_name, final_name))
+
+    # 4. Write single CSV (old => new)
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    csv_name = f"{timestamp_str}.csv"
+    csv_path = os.path.join(mapping_dir, csv_name)  # Save in mapping_dir
+
+    try:
+        with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["Original Filename", "New Filename"])
+            for orig, new in filename_mappings:
+                writer.writerow([orig, new])
+        print(f"File mapping log saved to: {csv_path}")
+    except Exception as e:
+        print(f"Error writing CSV log: {e}")
+
+###############################################################################
+# 5. Entry point
+###############################################################################
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python process_files.py <input_dir> <output_dir> <mapping_file>")
+    if len(sys.argv) != 5:
+        print("Usage: python process_files.py <input_dir> <output_dir> <mapping_dir> <mapping_file>")
         sys.exit(1)
 
     input_dir = sys.argv[1]
     output_dir = sys.argv[2]
-    mapping_file = sys.argv[3]
+    mapping_dir = sys.argv[3]
+    mapping_file= sys.argv[4]
 
     if not os.path.exists(input_dir):
-        print(f"Error: Input directory {input_dir} does not exist.")
+        print(f"Error: Input directory '{input_dir}' does not exist.")
         sys.exit(1)
 
     if not os.path.exists(mapping_file):
-        print(f"Error: Mapping file {mapping_file} does not exist.")
+        print(f"Error: Mapping file '{mapping_file}' does not exist.")
         sys.exit(1)
 
-    process_files(input_dir, output_dir, mapping_file)
+    process_files(input_dir, output_dir, mapping_dir, mapping_file)
