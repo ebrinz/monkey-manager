@@ -1,17 +1,64 @@
 services:
-  sandbox:
-    image: sandbox-image
+  text-extractor:
+    image: text-extractor
     volumes:
-      - ${INPUT_DIR}:/files:ro  # Input directory (read-only)
-      - ${OUTPUT_DIR}:/output   # Output directory (read/write)
-      - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro  # Mapping file (read/write)
-      - ${MAPPING_DIR}:/mapping
+      - ${INPUT_DIR}:/files:ro
+      - ${OUTPUT_DIR}:/output
+      - ./tmp:/tmp
     environment:
       - PYTHONUNBUFFERED=1
-    network_mode: none  # Disable network access
     security_opt:
-      - no-new-privileges:true           # Prevent privilege escalation
-      - seccomp=unconfined # maybe add seccomp:./seccomp.json  for Custom Seccomp profile 
-      - apparmor:docker-default          # Use AppArmor's default profile
-    command: ["python", "/app/process_files.py", "/files", "/output", "/mapping", "/mapping/mapping_file.xlsx"]
-    restart: "no"
+      - no-new-privileges:true
+      - apparmor:docker-default
+    network_mode: none
+    command: ["python", "/app/text_extractor.py", "/files", "/output"]
+
+  whisper-service:
+    image: whisper-service
+    volumes:
+      - ${AUDIO_INPUT}:/audio:ro
+      - ${AUDIO_OUTPUT}:/output
+      - ./tmp:/tmp
+      # Add a volume for the model cache
+      - whisper-models:/app/cache
+    environment:
+      - PYTHONUNBUFFERED=1
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    # Remove network_mode: none to allow model download
+    command: ["python3", "/app/whisper_service.py", "/audio", "/output"]
+
+  youtube-dl:
+    image: youtube-dl
+    volumes:
+      - ${YOUTUBE_LINKS}:/input:ro
+      - ${YOUTUBE_OUTPUT}:/output
+      - ${TMP_DIR}:/tmp
+      # Add a volume for the model cache
+      - whisper-models:/app/cache
+    environment:
+      - PYTHONUNBUFFERED=1
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    # Need network access for YouTube download and model download
+    command: ["python3", "/app/youtube_service.py", "/input", "/output", "/tmp"]
+
+  file-renamer:
+    image: file-renamer
+    volumes:
+      - ${PROCESSED_DIR}:/input:ro
+      - ${FINAL_OUTPUT_DIR}:/output
+      - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    network_mode: none
+    command: ["python", "/app/file_renamer.py", "/input", "/output", "/mapping/mapping_file.xlsx"]
+
+# Add a named volume for sharing the Whisper model between services
+volumes:
+  whisper-models:

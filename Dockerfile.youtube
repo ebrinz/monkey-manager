@@ -1,0 +1,39 @@
+# -----------------------------------------------
+# Dockerfile.youtube
+FROM python:3.10.13-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    yt-dlp \
+    pandas \
+    openpyxl \
+    torch \
+    torchaudio \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir \
+    openai-whisper \
+    psutil
+
+# Set up non-root user and create cache directory
+RUN useradd -r -s /bin/false appuser && \
+    mkdir -p /app/cache && \
+    chown -R appuser:appuser /app
+
+# Set working directory
+WORKDIR /app
+
+# Copy application code from src directory
+COPY --chown=appuser:appuser src/youtube_service.py src/forensic_logger.py ./
+
+USER appuser
+
+# Set cache directory environment variable
+ENV XDG_CACHE_HOME=/app/cache
+
+# Default command
+CMD ["python3", "youtube_service.py"]

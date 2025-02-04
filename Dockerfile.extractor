@@ -1,0 +1,41 @@
+# -----------------------------------------------
+# Dockerfile.extractor
+FROM python:3.10.13-slim
+
+# Install necessary system tools
+RUN apt-get update && apt-get install -y \
+    strace \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    PyMuPDF \
+    oletools \
+    python-docx \
+    pandas \
+    openpyxl \
+    psutil \
+    matplotlib
+
+# Set working directory
+WORKDIR /app
+
+# Copy the Python scripts from src directory
+COPY src/*.py ./
+
+# Create log directory
+RUN mkdir -p /output/logs /output/analysis
+
+# Set up non-root user and create cache directory
+RUN useradd -r -s /bin/false appuser && \
+    mkdir -p /app/cache && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# Set cache directory environment variable
+ENV XDG_CACHE_HOME=/app/cache
+
+# Default command
+CMD ["python", "/app/text_extractor.py"]
+

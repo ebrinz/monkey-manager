@@ -1,0 +1,32 @@
+# -----------------------------------------------
+# Dockerfile.renamer
+FROM python:3.10.13-slim
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    pandas \
+    openpyxl \
+    psutil
+
+# Set working directory
+WORKDIR /app
+
+# Copy the Python scripts from src directory
+COPY src/file_renamer.py src/forensic_logger.py ./
+
+# Create log directory
+RUN mkdir -p /output/logs
+
+# Set up non-root user and create cache directory
+RUN useradd -r -s /bin/false appuser && \
+    mkdir -p /app/cache && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# Set cache directory environment variable
+ENV XDG_CACHE_HOME=/app/cache
+
+# Default command
+CMD ["python", "/app/file_renamer.py"]
+

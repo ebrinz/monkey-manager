@@ -1,0 +1,29 @@
+{
+    "defaultAction": "SCMP_ACT_ERRNO",
+    "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_ARM64"],
+    "syscalls": [
+      {
+        "names": [
+          "read", "write", "open", "close", "stat", "fstat", "lstat",
+          "lseek", "readv", "writev", "access", "getcwd",
+          "openat", "newfstatat", "readlinkat",
+          
+          "mmap", "mprotect", "munmap", "brk",
+          
+          "clone", "exit", "exit_group", "futex",
+          
+          "arch_prctl", "set_tid_address", "set_robust_list",
+          
+          "clock_gettime", "clock_nanosleep", "nanosleep",
+          
+          "mkdir", "rmdir", "unlink", "rename", "chmod", "chown",
+          
+          "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+          
+          "uname", "getpid", "gettid"
+        ],
+        "action": "SCMP_ACT_ALLOW",
+        "args": []
+      }
+    ]
+  }

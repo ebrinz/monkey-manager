@@ -4,4 +4,10 @@ outputs/
 !outputs/.gitkeep
 mappings/
 !mappings/.gitkeep
+tmp/
+!tmp/.gitkeep
 .old
+
+
+.DS_Store
+

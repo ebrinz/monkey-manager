@@ -1,110 +1,131 @@
-# monkey-manager
+# Document Processing System
 
-**Automating SurveyMonkey response processing**
+A secure, containerized system for processing various types of documents and media:
+- PDF/DOCX sanitization and text extraction
+- Audio transcription using OpenAI's Whisper
+- YouTube video download and transcription
 
-This repository contains a Docker-based workflow for renaming and sanitizing PDF/DOCX files from SurveyMonkey (or similar) responses. The script also generates a mapping CSV that shows how each file was transformed (old filename → new filename).
-
----
+## Project Structure
+```
+.
+├── .env.example                # Environment variable template
+├── Dockerfile                  # Main document processing container
+├── Dockerfile.whisper          # Whisper transcription container
+├── Dockerfile.youtube          # YouTube download container
+├── Makefile                    # Build and run automation
+├── README.md                   # This file
+├── docker-compose.yml          # Container orchestration
+├── seccomp.json               # Security profile
+│
+├── src/
+│   ├── process_files.py       # Document processing logic
+│   ├── whisper_service.py     # Audio transcription service
+│   └── youtube_service.py     # YouTube download service
+│
+├── inputs/                    # Input files directory
+│   └── .gitkeep
+├── outputs/                   # Processed outputs
+│   └── .gitkeep
+├── mappings/                  # File mapping spreadsheets
+│   └── .gitkeep
+└── tmp/                      # Temporary processing directory
+    └── .gitkeep
+```
 
 ## Features
 
-1. **Copying/Extracting**  
-   - Files in the input directory (`INPUT_DIR`) are copied to a writable work directory (`/tmp/work`).  
-   - Any `.zip` archives are automatically extracted into that same work directory.  
+### 1. Document Processing
+- Secure PDF and DOCX sanitization
+- Text extraction with macro detection
+- File renaming based on mapping spreadsheet
 
-2. **PDF/DOCX Sanitization**  
-   - PDFs are read with **PyMuPDF** (`fitz`), extracting text.  
-   - DOCX files are scanned for macros (using **oletools**), then text is extracted via **python-docx**.  
-   - Text is saved as `.txt` files if sanitization is successful.
+### 2. Audio Transcription
+- Support for WAV, MP3, and other audio formats
+- GPU-accelerated processing with Whisper
+- High-accuracy transcription to text
 
-3. **Spreadsheet Lookup**  
-   - A spreadsheet (`MAPPING_FILE`) defines which files are associated with which **Respondent ID** and **File#** columns.  
-   - Spaces vs. `%20` are handled (the script tries both “File with spaces” and “File%20with%20spaces”).  
-   - Each recognized file is renamed to `R{respondentID}-{columnNumber}.{ext}`.
-
-4. **Single-Pass Renaming**  
-   - **Unrecognized** files (not in spreadsheet) are prefixed with `NORESPID_...`.  
-
-5. **Final CSV Log**  
-   - For **each** file processed, one line is added to the CSV with **two columns**:  
-     1. Original Filename  
-     2. Final Filename (or `.txt` if sanitized, or `"SKIPPED (hidden/system)"` for hidden files).  
-
----
+### 3. YouTube Processing
+- Download from YouTube links
+- Extract audio streams
+- Generate English transcriptions
 
 ## Setup
 
-1. **Environment Variables**  
-   In a `.env` file or environment, define paths for:  
-   ```dotenv
+1. **Environment Variables**
+   Copy `.env.example` to `.env` and configure:
+   ```bash
    INPUT_DIR=./inputs
    OUTPUT_DIR=./outputs
-   MAPPING_FILE=./mappings/YourMappingFile.xlsx
+   MAPPING_FILE=./mappings/mapping.xlsx
    MAPPING_DIR=./mappings
+   AUDIO_INPUT=./inputs/audio
+   YOUTUBE_LINKS=./inputs/youtube
+   TMP_DIR=./tmp
    ```
 
-2. **Docker Compose**
-   
+2. **Build Containers**
+   ```bash
+   make build
    ```
-   services:
-     sandbox:
-       image: sandbox-image
-       volumes:
-         - ${INPUT_DIR}:/files:ro    # Input directory (read-only)
-         - ${OUTPUT_DIR}:/output     # Output directory (read/write)
-         - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro
-         - ${MAPPING_DIR}:/mapping
-       environment:
-         - PYTHONUNBUFFERED=1
-       network_mode: none
-       security_opt:
-         - no-new-privileges:true
-         - seccomp=unconfined
-         - apparmor:docker-default
-       command: ["python", "/app/process_files.py", "/files", "/output", "/mapping", "/mapping/mapping_file.xlsx"]
-       restart: "no"
-    ```
 
-3. **Building and Running**
-   
-   - Build for ARM64 or AMD64 (example):
+3. **Run Services**
+   - Document processing:
+     ```bash
+     make run
      ```
-     docker buildx build --platform linux/arm64 -t sandbox-image --load .
-     docker buildx build --platform linux/amd64 -t sandbox-image --load .
+   - Audio transcription:
+     ```bash
+     make transcribe
+     ```
+   - YouTube processing:
+     ```bash
+     make youtube
      ```
 
-   - Run with Docker Compose:
-     ```
-     docker-compose up --remove-orphans --exit-code-from sandbox
-     ```
+## Security Features
+- Containerized execution
+- Read-only input volumes
+- Network isolation where possible
+- Custom seccomp profiles
+- Resource limits
+- Non-root execution
 
-   - The script processes files in /files (read-only mount), writes outputs and .txt files to /output, and reads the spreadsheet from /mapping/mapping_file.xlsx.
+## Usage Examples
 
-4. **Usage Flow**
-
-   a. Place original files (PDF/DOCX/ZIP) in INPUT_DIR.
-   b. Map them in MAPPING_FILE (XLSX or CSV), listing each Respondent ID and File#n columns.
-   c. Run docker-compose up.
-   d. Outputs appear in OUTPUT_DIR:
-       - Possibly renamed files.
-       - Any sanitized .txt outputs.
-       - A CSV log (in MAPPING_DIR) with columns Original Filename, New Filename.
-
-   Example CSV line for a recognized PDF:
-   ```
-   Original Filename       | New Filename
-   ------------------------------------------------
-   myrespondentFile.pdf    | R114719606389-1.txt
+1. **Document Processing**
+   ```bash
+   # Place files in inputs/
+   # Put mapping file in mappings/
+   make run
    ```
 
-   And for an unrecognized file:
-   ```
-   someRandomFile.pdf      | NORESPID_someRandomFile.pdf
+2. **Audio Transcription**
+   ```bash
+   # Place audio files in inputs/audio/
+   make transcribe
    ```
 
-## Notes:
+3. **YouTube Processing**
+   ```bash
+   # Create inputs/youtube/links.txt with URLs
+   make youtube
+   ```
 
-#### Macros in DOCX
-If macros are detected, the script warns and proceeds with extraction.
-Hidden Files
-Files starting with . are logged as "SKIPPED (hidden/system)" in the CSV, while .DS_Store and .gitkeep are completely ignored.
+## Cleanup
+```bash
+# Stop all containers
+make stop
+
+# Clean all generated files
+make clean
+```
+
+## Contributing
+1. Fork the repository
+2. Create a feature branch
+3. Commit changes
+4. Push to the branch
+5. Create a Pull Request
+
+## License
+MIT License
