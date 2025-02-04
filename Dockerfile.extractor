@@ -21,15 +21,19 @@ RUN pip install --no-cache-dir \
 WORKDIR /app
 
 # Copy the Python scripts from src directory
-COPY src/*.py ./
+# Copy the Python scripts
+COPY src/text_extractor.py src/forensic_logger.py src/file_renamer.py ./
 
 # Create log directory
 RUN mkdir -p /output/logs /output/analysis
 
 # Set up non-root user and create cache directory
-RUN useradd -r -s /bin/false appuser && \
-    mkdir -p /app/cache && \
-    chown -R appuser:appuser /app
+# Create necessary directories with restrictive permissions
+# Create necessary directories with restrictive permissions
+RUN mkdir -p /output/logs /app/cache /mapping && \ 
+    useradd -r -s /bin/false appuser && \
+    chown -R appuser:appuser /output /app /mapping && \
+    chmod 700 /output /output/logs /app/cache /mapping
 
 USER appuser
 
@@ -38,4 +42,3 @@ ENV XDG_CACHE_HOME=/app/cache
 
 # Default command
 CMD ["python", "/app/text_extractor.py"]
-

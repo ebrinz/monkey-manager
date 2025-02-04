@@ -1,63 +1,51 @@
+
 services:
   text-extractor:
     image: text-extractor
-    volumes:
-      - ${INPUT_DIR}:/files:ro
-      - ${OUTPUT_DIR}:/output
-      - ./tmp:/tmp
     environment:
       - PYTHONUNBUFFERED=1
+      - ENABLE_FILE_RENAMING=${ENABLE_FILE_RENAMING}
+    volumes:
+      - ${DOCS_INPUT}:/files:ro
+      - ${DOCS_OUTPUT}:/output
+      - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro
+      - ./tmp:/tmp
+      # - ./logs:/output/logs
+    network_mode: none
     security_opt:
       - no-new-privileges:true
       - apparmor:docker-default
-    network_mode: none
     command: ["python", "/app/text_extractor.py", "/files", "/output"]
-
+    
   whisper-service:
     image: whisper-service
     volumes:
       - ${AUDIO_INPUT}:/audio:ro
-      - ${AUDIO_OUTPUT}:/output
+      - ${VIDEO_INPUT}:/video:ro       # Add video input directory
+      - ${AUDIO_OUTPUT}:/audio_out     # Rename mount point for clarity
+      - ${VIDEO_OUTPUT}:/video_out     # Add video output directory
       - ./tmp:/tmp
-      # Add a volume for the model cache
+      # - ./logs:/output/logs
       - whisper-models:/app/cache
     environment:
       - PYTHONUNBUFFERED=1
-    security_opt:
-      - no-new-privileges:true
-      - apparmor:docker-default
-    # Remove network_mode: none to allow model download
-    command: ["python3", "/app/whisper_service.py", "/audio", "/output"]
+      - ENABLE_FILE_RENAMING=${ENABLE_FILE_RENAMING}
+    command: ["python3", "/app/whisper_service.py", "/audio", "/video", "/audio_out", "/video_out"]
 
   youtube-dl:
     image: youtube-dl
     volumes:
-      - ${YOUTUBE_LINKS}:/input:ro
+      - ${YOUTUBE_LINKS_FILE}:/input/youtube_links.csv:ro  # Fixed name and path
       - ${YOUTUBE_OUTPUT}:/output
-      - ${TMP_DIR}:/tmp
-      # Add a volume for the model cache
-      - whisper-models:/app/cache
-    environment:
-      - PYTHONUNBUFFERED=1
-    security_opt:
-      - no-new-privileges:true
-      - apparmor:docker-default
-    # Need network access for YouTube download and model download
-    command: ["python3", "/app/youtube_service.py", "/input", "/output", "/tmp"]
-
-  file-renamer:
-    image: file-renamer
-    volumes:
-      - ${PROCESSED_DIR}:/input:ro
-      - ${FINAL_OUTPUT_DIR}:/output
+      - ${VIDEO_INPUT}:/video_input
       - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - ENABLE_FILE_RENAMING=${ENABLE_FILE_RENAMING}
     security_opt:
       - no-new-privileges:true
       - apparmor:docker-default
-    network_mode: none
-    command: ["python", "/app/file_renamer.py", "/input", "/output", "/mapping/mapping_file.xlsx"]
+    command: ["python3", "/app/youtube_service.py", "/input/youtube_links.csv", "/output", "/video_input"]  # Use fixed path inside container
 
 # Add a named volume for sharing the Whisper model between services
 volumes:

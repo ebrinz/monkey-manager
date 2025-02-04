@@ -1,63 +1,82 @@
 import os
 import sys
-import whisper
 import pandas as pd
 import yt_dlp
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.formatters import TextFormatter
+from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 from forensic_logger import ForensicLogger
+from file_renamer import FilenamingUtility
 
 class YouTubeProcessor:
-    def __init__(self, input_dir, output_dir, temp_dir):
-        self.input_dir = input_dir
+    def __init__(self, links_file, output_dir, video_input_dir, mapping_file=None):
+        self.links_file = links_file
         self.output_dir = output_dir
-        self.temp_dir = temp_dir
+        self.video_input_dir = video_input_dir
         self.logger = ForensicLogger("/output/logs")
-        self.model = whisper.load_model("base")
+        
+        # Initialize filename utility
+        enable_renaming = os.environ.get('ENABLE_FILE_RENAMING', 'true').lower() == 'true'
+        self.filename_util = FilenamingUtility(mapping_file, enable_renaming)
         
         # Create directories
-        os.makedirs(temp_dir, exist_ok=True)
         os.makedirs(output_dir, exist_ok=True)
-
-    def find_youtube_list(self):
-        """Find Excel or CSV files containing YouTube URLs."""
-        files = []
-        for ext in ['.xlsx', '.csv']:
-            files.extend(Path(self.input_dir).glob(f'**/*{ext}'))
-        return files
-
-    def read_youtube_links(self, file_path):
-        """Extract YouTube URLs from Excel or CSV file."""
+        os.makedirs(video_input_dir, exist_ok=True)
+        
+    def get_video_id(self, url):
+        """Extract video ID from YouTube URL."""
         try:
-            if file_path.suffix.lower() == '.csv':
-                df = pd.read_csv(file_path)
-            else:  # Excel
-                df = pd.read_excel(file_path)
-            
-            # Try common column names for URLs
-            url_columns = ['url', 'link', 'youtube_url', 'youtube_link']
-            for col in url_columns:
-                if col in df.columns:
-                    return df[col].dropna().tolist()
-            
-            # If no known column found, use first column
-            return df.iloc[:, 0].dropna().tolist()
-            
+            parsed_url = urlparse(url)
+            if parsed_url.hostname in ('www.youtube.com', 'youtube.com'):
+                if parsed_url.path == '/watch':
+                    return parse_qs(parsed_url.query)['v'][0]
+                elif parsed_url.path.startswith('/v/'):
+                    return parsed_url.path.split('/')[2]
+            elif parsed_url.hostname == 'youtu.be':
+                return parsed_url.path[1:]
+            return None
         except Exception as e:
-            self.logger.log_anomaly('youtube_list_error', {
-                'file': str(file_path),
+            self.logger.log_anomaly('url_parse_error', {
+                'url': url,
                 'error': str(e)
             })
-            return []
+            return None
 
-    def download_audio(self, url, output_path):
-        """Download audio from YouTube URL."""
+    def get_transcript(self, video_id):
+        """Try to get transcript using youtube_transcript_api."""
+        try:
+            # First try to list available transcripts
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # Try to get English transcript first
+            try:
+                transcript = transcript_list.find_transcript(['en'])
+            except:
+                # If no English, get auto-generated English or first available
+                try:
+                    transcript = transcript_list.find_generated_transcript(['en'])
+                except:
+                    # Get first available transcript and translate to English
+                    transcript = transcript_list.find_manually_created_transcript()
+                    transcript = transcript.translate('en')
+            
+            # Get the transcript and format it as plain text
+            transcript_data = transcript.fetch()
+            formatter = TextFormatter()
+            return formatter.format_transcript(transcript_data)
+            
+        except Exception as e:
+            self.logger.log_anomaly('transcript_api_error', {
+                'video_id': video_id,
+                'error': str(e)
+            })
+            return None
+
+    def download_video(self, url, output_path):
+        """Download video from YouTube URL."""
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'wav',
-                'preferredquality': '192',
-            }],
+            'format': 'mp4',
             'outtmpl': output_path,
             'quiet': True,
             'no_warnings': True
@@ -80,93 +99,79 @@ class YouTubeProcessor:
             })
             return False, None
 
-    def transcribe_audio(self, audio_path, output_path):
-        """Transcribe downloaded audio using Whisper."""
+    def read_youtube_links(self):
+        """Read YouTube URLs from Excel or CSV file."""
         try:
-            self.logger.log_file_event('transcription_start', audio_path)
+            if self.links_file.endswith('.csv'):
+                df = pd.read_csv(self.links_file)
+            else:  # Excel
+                df = pd.read_excel(self.links_file)
             
-            # Transcribe
-            result = self.model.transcribe(audio_path)
+            # Get the first column, assuming it contains URLs
+            return df.iloc[:, 0].dropna().tolist()
             
-            # Write transcription
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(result["text"])
-            
-            self.logger.log_file_event('transcription_complete', output_path, {
-                'duration': result.get('duration', 0),
-                'language': result.get('language', 'unknown')
-            })
-            return True
         except Exception as e:
-            self.logger.log_anomaly('transcription_error', {
-                'file': audio_path,
+            self.logger.log_anomaly('links_file_error', {
+                'file': self.links_file,
                 'error': str(e)
             })
-            return False
+            return []
 
     def process_youtube_links(self):
         """Main processing function."""
         self.logger.log_system_state()
 
-        youtube_files = self.find_youtube_list()
-        if not youtube_files:
-            self.logger.log_anomaly('no_youtube_list', {
-                'input_dir': self.input_dir
+        links = self.read_youtube_links()
+        if not links:
+            self.logger.log_anomaly('no_youtube_links', {
+                'file': self.links_file
             })
             return
 
-        for file_path in youtube_files:
-            links = self.read_youtube_links(file_path)
-            if not links:
+        for i, url in enumerate(links, 1):
+            video_id = self.get_video_id(url)
+            if not video_id:
                 continue
 
-            for i, url in enumerate(links, 1):
-                # Create unique names for files
-                base_name = f"youtube_{Path(file_path).stem}_{i}"
-                audio_path = os.path.join(self.temp_dir, f"{base_name}.wav")
-                text_path = os.path.join(self.output_dir, f"{base_name}.txt")
-
-                # Download and process
-                success, title = self.download_audio(url, audio_path)
-                if success:
-                    if self.transcribe_audio(audio_path, text_path):
-                        # Update filename with video title if available
-                        if title:
-                            safe_title = "".join(c for c in title if c.isalnum() or c in " -_")[:100]
-                            new_text_path = os.path.join(self.output_dir, f"{safe_title}.txt")
-                            try:
-                                os.rename(text_path, new_text_path)
-                                text_path = new_text_path
-                            except Exception as e:
-                                self.logger.log_anomaly('rename_error', {
-                                    'old_path': text_path,
-                                    'new_path': new_text_path,
-                                    'error': str(e)
-                                })
-
-                    # Clean up temp audio file
-                    try:
-                        os.remove(audio_path)
-                    except Exception as e:
-                        self.logger.log_anomaly('cleanup_error', {
-                            'file': audio_path,
-                            'error': str(e)
-                        })
+            # Try to get transcript first
+            transcript = self.get_transcript(video_id)
+            
+            if transcript:
+                # Save transcript directly
+                output_filename = self.filename_util.get_output_filename(f"youtube_{video_id}.txt")
+                output_path = os.path.join(self.output_dir, output_filename)
+                
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(transcript)
+                
+                self.logger.log_file_event('transcript_saved', output_path)
+                
+            else:
+                # Download video for later processing by whisper service
+                video_filename = self.filename_util.get_output_filename(f"youtube_{video_id}.mp4")
+                video_path = os.path.join(self.video_input_dir, video_filename)
+                
+                success, title = self.download_video(url, video_path)
+                if not success:
+                    self.logger.log_anomaly('video_processing_failed', {
+                        'url': url,
+                        'video_id': video_id
+                    })
 
         self.logger.log_system_state()
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
-        print("Usage: python youtube_service.py <input_dir> <output_dir> <temp_dir>")
+        print("Usage: python youtube_service.py <links_file> <output_dir> <video_input_dir>")
         sys.exit(1)
 
-    input_dir = sys.argv[1]
+    links_file = sys.argv[1]
     output_dir = sys.argv[2]
-    temp_dir = sys.argv[3]
+    video_input_dir = sys.argv[3]
 
-    if not os.path.exists(input_dir):
-        print(f"Error: Input directory '{input_dir}' does not exist.")
+    if not os.path.exists(links_file):
+        print(f"Error: Links file '{links_file}' does not exist.")
         sys.exit(1)
 
-    processor = YouTubeProcessor(input_dir, output_dir, temp_dir)
+    processor = YouTubeProcessor(links_file, output_dir, video_input_dir)
     processor.process_youtube_links()

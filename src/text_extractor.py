@@ -4,13 +4,52 @@ import fitz  # PyMuPDF
 from oletools.olevba import VBA_Parser
 from docx import Document
 from forensic_logger import ForensicLogger
+from file_renamer import FilenamingUtility
 
 class TextExtractor:
     def __init__(self, input_dir, output_dir):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.logger = ForensicLogger("/output/logs")
+        
+        # Initialize filename utility with mapping file
+        enable_renaming = os.environ.get('ENABLE_FILE_RENAMING', 'true').lower() == 'true'
+        self.filename_util = FilenamingUtility("/mapping/mapping_file.xlsx", enable_renaming)
+        
         os.makedirs(output_dir, exist_ok=True)
+
+    def process_files(self):
+        """Process all files in the input directory."""
+        self.logger.log_system_state()
+
+        for root, _, files in os.walk(self.input_dir):
+            for fname in files:
+                if fname.startswith('.') or fname in [".DS_Store", ".gitkeep"]:
+                    continue
+
+                file_path = os.path.join(root, fname)
+                base, ext = os.path.splitext(fname)
+                ext_lower = ext.lower()
+
+                # Process based on extension
+                text = None
+                if ext_lower == '.pdf':
+                    text = self.sanitize_pdf(file_path)
+                elif ext_lower == '.docx':
+                    text = self.sanitize_docx(file_path)
+
+                # Save extracted text
+                if text:
+                    # Get new filename based on mapping
+                    new_filename = self.filename_util.get_output_filename(fname, '.txt')
+                    txt_path = os.path.join(self.output_dir, new_filename)
+                    
+                    with open(txt_path, "w", encoding="utf-8") as out_f:
+                        out_f.write(text)
+                    self.logger.log_file_event('text_saved', txt_path, {
+                        'original_file': file_path,
+                        'text_length': len(text)
+                    })
 
     def sanitize_pdf(self, input_file):
         """Extract text from PDF while logging operations."""
@@ -62,38 +101,6 @@ class TextExtractor:
             })
             return None
 
-    def process_files(self):
-        """Process all files in the input directory."""
-        self.logger.log_system_state()
-
-        for root, _, files in os.walk(self.input_dir):
-            for fname in files:
-                if fname.startswith('.') or fname in [".DS_Store", ".gitkeep"]:
-                    continue
-
-                file_path = os.path.join(root, fname)
-                base, ext = os.path.splitext(fname)
-                ext_lower = ext.lower()
-
-                # Process based on extension
-                text = None
-                if ext_lower == '.pdf':
-                    text = self.sanitize_pdf(file_path)
-                elif ext_lower == '.docx':
-                    text = self.sanitize_docx(file_path)
-
-                # Save extracted text
-                if text:
-                    txt_filename = f"{base}.txt"
-                    txt_path = os.path.join(self.output_dir, txt_filename)
-                    with open(txt_path, "w", encoding="utf-8") as out_f:
-                        out_f.write(text)
-                    self.logger.log_file_event('text_saved', txt_path, {
-                        'original_file': file_path,
-                        'text_length': len(text)
-                    })
-
-        self.logger.log_system_state()
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

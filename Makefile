@@ -8,7 +8,7 @@ VERSION = 1.0.0
 # Directories
 DIRS = tmp outputs
 
-.PHONY: all build clean run test help extract transcribe youtube rename prepare-inputs init-files
+.PHONY: all build clean run test help extract transcribe youtube prepare-inputs init-files
 
 all: prepare-inputs build run
 
@@ -31,7 +31,6 @@ build: $(DIRS) init-files
 	$(DOCKER) build -t text-extractor -f Dockerfile.extractor .
 	$(DOCKER) build -t whisper-service -f Dockerfile.whisper .
 	$(DOCKER) build -t youtube-dl -f Dockerfile.youtube .
-	$(DOCKER) build -t file-renamer -f Dockerfile.renamer .
 
 # Run text extraction
 extract: prepare-inputs
@@ -45,12 +44,8 @@ transcribe: prepare-inputs
 youtube: prepare-inputs
 	$(DOCKER_COMPOSE) up youtube-dl
 
-# Rename files
-rename: 
-	$(DOCKER_COMPOSE) up file-renamer
-
 # Process everything
-run: extract transcribe youtube rename
+run: extract youtube transcribe
 
 # Stop all containers
 stop:
@@ -77,7 +72,6 @@ help:
 	@echo "  make extract       - Run text extraction"
 	@echo "  make transcribe    - Run audio/video transcription"
 	@echo "  make youtube       - Process YouTube videos"
-	@echo "  make rename        - Rename files using mapping"
 	@echo "  make run           - Run complete pipeline"
 	@echo "  make stop          - Stop all containers"
 	@echo "  make clean         - Clean up all generated files"
