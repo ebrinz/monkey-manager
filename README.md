@@ -8,19 +8,25 @@ A secure, containerized system for processing various types of documents and med
 ## Project Structure
 ```
 .
-├── .env.example                # Environment variable template
-├── Dockerfile                  # Main document processing container
-├── Dockerfile.whisper          # Whisper transcription container
-├── Dockerfile.youtube          # YouTube download container
-├── Makefile                    # Build and run automation
-├── README.md                   # This file
-├── docker-compose.yml          # Container orchestration
+├── Dockerfile.extractor
+├── Dockerfile.renamer
+├── Dockerfile.whisper
+├── Dockerfile.youtube
+├── Makefile
+├── .env
+├── README.md
+├── docker-compose.yml
 ├── seccomp.json               # Security profile
 │
-├── src/
-│   ├── process_files.py       # Document processing logic
-│   ├── whisper_service.py     # Audio transcription service
-│   └── youtube_service.py     # YouTube download service
+├── src
+│   ├── __init__.py
+│   ├── file_renamer.py
+│   ├── forensic_analysis.py
+│   ├── forensic_logger.py
+│   ├── process_files.py
+│   ├── text_extractor.py
+│   ├── whisper_service.py
+│   └── youtube_service.py
 │
 ├── inputs/                    # Input files directory
 │   └── .gitkeep
