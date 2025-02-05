@@ -87,7 +87,6 @@ A secure, containerized system for processing various types of documents and med
      ```bash
      Available targets:
        make prepare-inputs - Extract any zip files in inputs directory
-       make init-files    - Initialize necessary Python files
        make build         - Build all Docker images
        make extract       - Run text extraction
        make transcribe    - Run audio/video transcription
@@ -109,22 +108,24 @@ A secure, containerized system for processing various types of documents and med
 
 ## Usage Examples
 
+0. **Setup**
+   ```bash
+   make build
+   prepare-inputs
+   ```
+
 1. **Document Processing**
    ```bash
-   # Place files in inputs/
-   # Put mapping file in mappings/
    make extract
    ```
 
 2. **Audio Transcription**
    ```bash
-   # Place audio files in inputs/audio/
    make transcribe
    ```
 
 3. **YouTube Processing**
    ```bash
-   # Create inputs/youtube/links.txt with URLs
    make youtube
    ```
 
