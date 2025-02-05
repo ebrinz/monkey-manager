@@ -9,13 +9,12 @@ A secure, containerized system for processing various types of documents and med
 ```
 .
 ├── Dockerfile.extractor
-├── Dockerfile.renamer
 ├── Dockerfile.whisper
 ├── Dockerfile.youtube
 ├── Makefile
-├── .env
 ├── README.md
-├── docker-compose.yml
+├── docker-compose.ym
+├── .env
 ├── seccomp.json               # Security profile
 │
 ├── src
@@ -23,7 +22,7 @@ A secure, containerized system for processing various types of documents and med
 │   ├── file_renamer.py
 │   ├── forensic_analysis.py
 │   ├── forensic_logger.py
-│   ├── process_files.py
+│   ├── process_files.py.old
 │   ├── text_extractor.py
 │   ├── whisper_service.py
 │   └── youtube_service.py
@@ -46,7 +45,7 @@ A secure, containerized system for processing various types of documents and med
 - File renaming based on mapping spreadsheet
 
 ### 2. Audio Transcription
-- Support for WAV, MP3, and other audio formats
+- Support for WAV, MP3, MP4, and other audio/video formats
 - GPU-accelerated processing with Whisper
 - High-accuracy transcription to text
 
@@ -60,32 +59,44 @@ A secure, containerized system for processing various types of documents and med
 1. **Environment Variables**
    Copy `.env.example` to `.env` and configure:
    ```bash
-   INPUT_DIR=./inputs
-   OUTPUT_DIR=./outputs
-   MAPPING_FILE=./mappings/mapping.xlsx
-   MAPPING_DIR=./mappings
-   AUDIO_INPUT=./inputs/audio
-   YOUTUBE_LINKS=./inputs/youtube
+   # Survey Monkey output file renaming
+   ENABLE_FILE_RENAMING=true
+   # Mapping File
+   MAPPING_FILE=./inputs/.../.xlsx
+   YOUTUBE_LINKS_FILE=./inputs/.../youtube_links.csv
+
+
+   # Input Directories
+   DOCS_INPUT=./inputs/...
+   AUDIO_INPUT=./inputs/...
+   VIDEO_INPUT=./inputs/...
+
+
+   # Output Directories
+   DOCS_OUTPUT=../outputs/...
+   AUDIO_OUTPUT=./outputs/...
+   VIDEO_OUTPUT=./outputs/...
+   YOUTUBE_OUTPUT=./outputs/...
+
+   # Temporary Directory
    TMP_DIR=./tmp
    ```
 
-2. **Build Containers**
-   ```bash
-   make build
-   ```
-
-3. **Run Services**
+2. **Run Services**
    - Document processing:
      ```bash
-     make run
-     ```
-   - Audio transcription:
-     ```bash
-     make transcribe
-     ```
-   - YouTube processing:
-     ```bash
-     make youtube
+     Available targets:
+       make prepare-inputs - Extract any zip files in inputs directory
+       make init-files    - Initialize necessary Python files
+       make build         - Build all Docker images
+       make extract       - Run text extraction
+       make transcribe    - Run audio/video transcription
+       make youtube       - Process YouTube videos
+       make run           - Run complete pipeline
+       make stop          - Stop all containers
+       make clean         - Clean up all generated files
+       make test          - Run tests
+       make help          - Show this help
      ```
 
 ## Security Features
@@ -125,13 +136,3 @@ make stop
 # Clean all generated files
 make clean
 ```
-
-## Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Commit changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-MIT License
