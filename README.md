@@ -2,7 +2,7 @@
 
 A secure, containerized system for processing various types of documents and media:
 - PDF/DOCX sanitization and text extraction
-- Audio transcription using OpenAI's Whisper
+- Audio/Video transcription using OpenAI's Whisper
 - YouTube video download and transcription
 
 ## Project Structure
