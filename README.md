@@ -113,7 +113,7 @@ A secure, containerized system for processing various types of documents and med
    ```bash
    # Place files in inputs/
    # Put mapping file in mappings/
-   make run
+   make extract
    ```
 
 2. **Audio Transcription**
