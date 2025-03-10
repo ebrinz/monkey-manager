@@ -110,10 +110,14 @@ class SurveyMonkeyValidator:
             print("Warning: No JSON files found in output directories.")
             return False
             
-        # Get file columns from mapping (looking for columns like "File 1", "File 2", etc.)
-        file_columns = [col for col in mapping_df.columns if re.match(r'file\s*\d+', col.lower())]
+        # Get file columns from mapping using more flexible patterns
+        # Match patterns like "File 1", "File#1", "File #2", etc.
+        file_columns = [col for col in mapping_df.columns 
+                       if re.match(r'file\s*#?\s*\d+', col.lower()) or 
+                       re.match(r'file', col.lower())]
+        
         if not file_columns:
-            print("Error: No file columns found in mapping file. Expected columns like 'File 1', 'File 2', etc.")
+            print("Error: No file columns found in mapping file. Expected columns containing 'File' text.")
             return False
         
         print(f"Found {len(file_columns)} file columns in mapping file: {', '.join(file_columns)}")

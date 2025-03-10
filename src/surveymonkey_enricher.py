@@ -108,8 +108,18 @@ class SurveyMonkeyEnricher:
                     'error': str(e)
                 })
         
-        # Get file columns from mapping (looking for columns like "File 1", "File 2", etc.)
-        file_columns = [col for col in mapping_df.columns if re.match(r'file\s*\d+', col.lower())]
+        # Get file columns from mapping using more flexible patterns
+        # Match patterns like "File 1", "File#1", "File #2", etc. or just "File"
+        file_columns = [col for col in mapping_df.columns 
+                       if re.match(r'file\s*#?\s*\d+', col.lower()) or 
+                       re.match(r'file', col.lower())]
+        
+        if not file_columns:
+            self.logger.log_anomaly('no_file_columns_found', {
+                'available_columns': list(mapping_df.columns)
+            })
+            print("Warning: No file columns found in mapping file. Expected columns containing 'File' text.")
+            return
         
         # For each row in mapping file
         enrichment_count = 0
