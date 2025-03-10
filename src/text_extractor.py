@@ -1,20 +1,23 @@
 import os
 import sys
+import json
 import fitz  # PyMuPDF
+import datetime
 from oletools.olevba import VBA_Parser
 from docx import Document
 from forensic_logger import ForensicLogger
 from file_renamer import FilenamingUtility
 
 class TextExtractor:
-    def __init__(self, input_dir, output_dir):
+    def __init__(self, input_dir, output_dir, mapping_file="/mapping/mapping_file.xlsx", force_reprocess=False):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.logger = ForensicLogger("/output/logs")
+        self.force_reprocess = force_reprocess
         
         # Initialize filename utility with mapping file
         enable_renaming = os.environ.get('ENABLE_FILE_RENAMING', 'true').lower() == 'true'
-        self.filename_util = FilenamingUtility("/mapping/mapping_file.xlsx", enable_renaming)
+        self.filename_util = FilenamingUtility(mapping_file, enable_renaming)
         
         os.makedirs(output_dir, exist_ok=True)
 
@@ -30,6 +33,21 @@ class TextExtractor:
                 file_path = os.path.join(root, fname)
                 base, ext = os.path.splitext(fname)
                 ext_lower = ext.lower()
+                
+                # Skip unsupported file types
+                if ext_lower not in ['.pdf', '.docx']:
+                    continue
+                
+                # Check if output file already exists
+                new_filename = self.filename_util.get_output_filename(fname, '.json')
+                json_path = os.path.join(self.output_dir, new_filename)
+                
+                # Skip if output already exists (unless force flag is set)
+                if os.path.exists(json_path) and not self.force_reprocess:
+                    self.logger.log_file_event('skip_existing_output', file_path, {
+                        'output_path': json_path
+                    })
+                    continue
 
                 # Process based on extension
                 text = None
@@ -38,15 +56,22 @@ class TextExtractor:
                 elif ext_lower == '.docx':
                     text = self.sanitize_docx(file_path)
 
-                # Save extracted text
+                # Save extracted text as JSON
                 if text:
-                    # Get new filename based on mapping
-                    new_filename = self.filename_util.get_output_filename(fname, '.txt')
-                    txt_path = os.path.join(self.output_dir, new_filename)
+                    # Create JSON document
+                    doc = {
+                        'text': text,
+                        'filename': fname,
+                        'filetype': ext_lower.lstrip('.'),
+                        'original_path': file_path,
+                        'extraction_timestamp': datetime.datetime.now().isoformat()
+                    }
                     
-                    with open(txt_path, "w", encoding="utf-8") as out_f:
-                        out_f.write(text)
-                    self.logger.log_file_event('text_saved', txt_path, {
+                    # Save as JSON
+                    with open(json_path, "w", encoding="utf-8") as out_f:
+                        json.dump(doc, out_f, ensure_ascii=False, indent=2)
+                    
+                    self.logger.log_file_event('json_saved', json_path, {
                         'original_file': file_path,
                         'text_length': len(text)
                     })
@@ -103,16 +128,24 @@ class TextExtractor:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python text_extractor.py <input_dir> <output_dir>")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Extract text from PDF and DOCX files.")
+    parser.add_argument("input_dir", help="Directory containing files to process")
+    parser.add_argument("output_dir", help="Directory for JSON outputs")
+    parser.add_argument("--force", "-f", action="store_true", help="Force reprocessing of files that already have outputs")
+    parser.add_argument("--mapping", "-m", help="Path to mapping file for filename conversion")
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.input_dir):
+        print(f"Error: Input directory '{args.input_dir}' does not exist.")
         sys.exit(1)
 
-    input_dir = sys.argv[1]
-    output_dir = sys.argv[2]
-
-    if not os.path.exists(input_dir):
-        print(f"Error: Input directory '{input_dir}' does not exist.")
-        sys.exit(1)
-
-    extractor = TextExtractor(input_dir, output_dir)
+    extractor = TextExtractor(
+        args.input_dir, 
+        args.output_dir, 
+        mapping_file=args.mapping if args.mapping else "/mapping/mapping_file.xlsx",
+        force_reprocess=args.force
+    )
     extractor.process_files()

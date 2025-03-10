@@ -1,18 +1,21 @@
 import os
 import sys
+import json
 import whisper
 import subprocess
+import datetime
 from pathlib import Path
 from forensic_logger import ForensicLogger
 from file_renamer import FilenamingUtility
 
 class WhisperTranscriber:
-    def __init__(self, audio_input_dir, video_input_dir, audio_output_dir, video_output_dir, mapping_file=None):
+    def __init__(self, audio_input_dir, video_input_dir, audio_output_dir, video_output_dir, mapping_file=None, force_reprocess=False):
         self.audio_input_dir = audio_input_dir
         self.video_input_dir = video_input_dir
         self.audio_output_dir = audio_output_dir
         self.video_output_dir = video_output_dir
         self.logger = ForensicLogger("/output/logs")
+        self.force_reprocess = force_reprocess
         
         # Initialize filename utility
         enable_renaming = os.environ.get('ENABLE_FILE_RENAMING', 'true').lower() == 'true'
@@ -50,7 +53,7 @@ class WhisperTranscriber:
             })
             return False
 
-    def transcribe_audio(self, audio_path, output_path):
+    def transcribe_audio(self, audio_path, output_path, file_type="audio"):
         """Transcribe audio file using Whisper."""
         try:
             self.logger.log_file_event('transcription_start', audio_path)
@@ -58,11 +61,24 @@ class WhisperTranscriber:
             # Transcribe
             result = self.model.transcribe(audio_path)
             
-            # Write transcription
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(result["text"])
+            # Get original filename
+            fname = os.path.basename(audio_path)
             
-            self.logger.log_file_event('transcription_complete', output_path, {
+            # Create JSON document
+            doc = {
+                'text': result["text"],
+                'filename': fname,
+                'filetype': os.path.splitext(fname)[1].lower().lstrip('.') if '.' in fname else file_type,
+                'duration': result.get('duration', 0),
+                'language': result.get('language', 'unknown'),
+                'transcription_timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            # Write JSON document
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(doc, f, ensure_ascii=False, indent=2)
+            
+            self.logger.log_file_event('json_transcription_saved', output_path, {
                 'duration': result.get('duration', 0),
                 'language': result.get('language', 'unknown')
             })
@@ -78,10 +94,11 @@ class WhisperTranscriber:
         """Process a single audio file."""
         try:
             fname = os.path.basename(file_path)
-            new_filename = self.filename_util.get_output_filename(fname, '.txt')
+            ext = os.path.splitext(fname)[1].lower()
+            new_filename = self.filename_util.get_output_filename(fname, '.json')
             output_path = os.path.join(output_dir, new_filename)
             
-            return self.transcribe_audio(file_path, output_path)
+            return self.transcribe_audio(file_path, output_path, file_type=ext.lstrip('.'))
         except Exception as e:
             self.logger.log_anomaly('audio_processing_error', {
                 'file': file_path,
@@ -95,15 +112,16 @@ class WhisperTranscriber:
             fname = os.path.basename(file_path)
             base_name = Path(file_path).stem
             temp_audio = os.path.join("/tmp/audio_processing", f"{base_name}.wav")
+            ext = os.path.splitext(fname)[1].lower()
             
             # Extract audio
             if not self.extract_audio_from_video(str(file_path), temp_audio):
                 return False
             
             # Transcribe
-            new_filename = self.filename_util.get_output_filename(fname, '.txt')
+            new_filename = self.filename_util.get_output_filename(fname, '.json')
             output_path = os.path.join(output_dir, new_filename)
-            success = self.transcribe_audio(temp_audio, output_path)
+            success = self.transcribe_audio(temp_audio, output_path, file_type=ext.lstrip('.'))
             
             # Cleanup
             try:
@@ -139,6 +157,16 @@ class WhisperTranscriber:
                 rel_path = os.path.relpath(root, input_dir)
                 output_subdir = os.path.join(output_dir, rel_path)
                 os.makedirs(output_subdir, exist_ok=True)
+                
+                # Check if output file already exists
+                new_filename = self.filename_util.get_output_filename(fname, '.json')
+                output_path = os.path.join(output_subdir, new_filename)
+                
+                if os.path.exists(output_path) and not self.force_reprocess:
+                    self.logger.log_file_event('skip_existing_output', file_path, {
+                        'output_path': output_path
+                    })
+                    continue
 
                 # Process file based on type
                 if ext in ['.mp4', '.mov', '.avi', '.mkv']:
@@ -165,18 +193,28 @@ class WhisperTranscriber:
         self.logger.log_system_state()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        print("Usage: python whisper_service.py <audio_input_dir> <video_input_dir> <audio_output_dir> <video_output_dir>")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Process audio and video files with Whisper.")
+    parser.add_argument("audio_input_dir", help="Directory containing audio files")
+    parser.add_argument("video_input_dir", help="Directory containing video files")
+    parser.add_argument("audio_output_dir", help="Directory for audio transcription outputs")
+    parser.add_argument("video_output_dir", help="Directory for video transcription outputs")
+    parser.add_argument("--force", "-f", action="store_true", help="Force reprocessing of files that already have outputs")
+    parser.add_argument("--mapping", "-m", help="Path to mapping file for filename conversion")
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.audio_input_dir) and not os.path.exists(args.video_input_dir):
+        print(f"Error: Neither audio input directory '{args.audio_input_dir}' nor video input directory '{args.video_input_dir}' exist.")
         sys.exit(1)
 
-    audio_input_dir = sys.argv[1]
-    video_input_dir = sys.argv[2]
-    audio_output_dir = sys.argv[3]
-    video_output_dir = sys.argv[4]
-
-    if not os.path.exists(audio_input_dir) and not os.path.exists(video_input_dir):
-        print(f"Error: Neither audio input directory '{audio_input_dir}' nor video input directory '{video_input_dir}' exist.")
-        sys.exit(1)
-
-    transcriber = WhisperTranscriber(audio_input_dir, video_input_dir, audio_output_dir, video_output_dir)
+    transcriber = WhisperTranscriber(
+        args.audio_input_dir, 
+        args.video_input_dir, 
+        args.audio_output_dir, 
+        args.video_output_dir,
+        mapping_file=args.mapping,
+        force_reprocess=args.force
+    )
     transcriber.process_files()

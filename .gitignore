@@ -1,13 +1,2 @@
-inputs/
-!inputs/.gitkeep
-outputs/
-!outputs/.gitkeep
-mappings/
-!mappings/.gitkeep
-tmp/
-!tmp/.gitkeep
-.old
-
-
-.DS_Store
-
+claude.md
+.old/
