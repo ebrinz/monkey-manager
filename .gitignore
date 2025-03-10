@@ -1,2 +1,17 @@
 claude.md
 .old/
+
+*.old
+
+inputs/*
+!inputs/.gitkeep
+
+outputs/*
+!outputs/.gitkeep
+
+tmp/*
+!tmp/.gitkeep
+
+
+.DS_Store
+__pycache__
