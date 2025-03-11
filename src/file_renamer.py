@@ -54,31 +54,33 @@ class FilenamingUtility:
             print(f"Error building filename lookup: {e}")
             self.enable_renaming = False
 
-    def get_output_filename(self, input_filename: str, output_ext: Optional[str] = None) -> str:
+    def get_output_filename(self, input_filename: str, output_ext: Optional[str] = None) -> Tuple[str, Optional[str], Optional[str]]:
         """
-        Generate output filename based on mapping and renaming settings.
+        Generate output filename and return respondent info if available.
         
         Args:
             input_filename: Original filename
             output_ext: Optional new extension (e.g., '.txt' for text output)
         
         Returns:
-            New filename based on respondent ID if available, or NORESPID_ prefix
+            Tuple of (output_filename, respondent_id, column_number)
+            - output_filename uses the original name with optional new extension
+            - respondent_id will be None if no mapping exists
+            - column_number will be None if no mapping exists
         """
-        if not self.enable_renaming:
-            return input_filename
-
         # Get base name and extension
         base, ext = os.path.splitext(input_filename)
         if output_ext:
             ext = output_ext
-
-        # Look up respondent ID
+            
+        # Create output filename (preserve original name)
+        output_filename = f"{base}{ext}"
+        
+        # Look up respondent ID but don't modify filename
         match = self.lookup.get(input_filename)
         
         if match:
             respondent_id, col_num = match
-            return f"R{respondent_id}-{col_num}{ext}"
+            return output_filename, respondent_id, col_num
         else:
-            cleaned_name = base.replace(" ", "_")
-            return f"NORESPID_{cleaned_name}{ext}"
+            return output_filename, None, None

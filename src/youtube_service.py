@@ -1,6 +1,8 @@
 import os
 import sys
 import pandas as pd
+import json
+import datetime
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
@@ -10,11 +12,12 @@ from forensic_logger import ForensicLogger
 from file_renamer import FilenamingUtility
 
 class YouTubeProcessor:
-    def __init__(self, links_file, output_dir, video_input_dir, mapping_file=None):
+    def __init__(self, links_file, output_dir, video_input_dir, mapping_file=None, force_reprocess=False):
         self.links_file = links_file
         self.output_dir = output_dir
         self.video_input_dir = video_input_dir
         self.logger = ForensicLogger("/output/logs")
+        self.force_reprocess = force_reprocess
         
         # Initialize filename utility
         enable_renaming = os.environ.get('ENABLE_FILE_RENAMING', 'true').lower() == 'true'
@@ -42,6 +45,37 @@ class YouTubeProcessor:
                 'error': str(e)
             })
             return None
+            
+    def get_video_metadata(self, url):
+        """Extract metadata like channel ID from YouTube URL."""
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'extract_flat': False  # Changed to False to get full metadata
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return {
+                    'channel_id': info.get('channel_id', None),
+                    'channel': info.get('channel', info.get('uploader', None)),
+                    'title': info.get('title', 'unknown'),
+                    'uploader': info.get('uploader', None),
+                    'uploader_id': info.get('uploader_id', None)
+                }
+        except Exception as e:
+            self.logger.log_anomaly('metadata_extraction_error', {
+                'url': url,
+                'error': str(e)
+            })
+            return {
+                'channel_id': None, 
+                'channel': None,
+                'title': None, 
+                'uploader': None,
+                'uploader_id': None
+            }
 
     def get_transcript(self, video_id):
         """Try to get transcript using youtube_transcript_api."""
@@ -86,12 +120,20 @@ class YouTubeProcessor:
             self.logger.log_file_event('youtube_download_start', url)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'unknown')
+                metadata = {
+                    'title': info.get('title', 'unknown'),
+                    'channel_id': info.get('channel_id', None),
+                    'channel': info.get('channel', info.get('uploader', None)),
+                    'uploader': info.get('uploader', None),
+                    'uploader_id': info.get('uploader_id', None)
+                }
             self.logger.log_file_event('youtube_download_complete', output_path, {
-                'title': title,
-                'duration': info.get('duration', 0)
+                'title': metadata['title'],
+                'duration': info.get('duration', 0),
+                'channel_id': metadata['channel_id'],
+                'channel': metadata['channel']
             })
-            return True, title
+            return True, metadata
         except Exception as e:
             self.logger.log_anomaly('youtube_download_error', {
                 'url': url,
@@ -133,45 +175,97 @@ class YouTubeProcessor:
             if not video_id:
                 continue
 
+            # Get metadata for all videos
+            metadata = self.get_video_metadata(url)
+            
+            # Create a safe channel identifier for filenames
+            channel_id = metadata['channel_id'] or 'unknown_channel'
+            channel_name = metadata['channel'] or metadata['uploader'] or 'unknown_channel'
+            safe_channel = channel_id.replace('/', '_').replace('\\', '_')
+            
+            # Calculate expected output path with channel ID included
+            output_filename, _, _ = self.filename_util.get_output_filename(f"youtube_{safe_channel}_{video_id}.json")
+            output_path = os.path.join(self.output_dir, str(output_filename))
+            
+            # Check if output already exists
+            if os.path.exists(output_path) and not self.force_reprocess:
+                self.logger.log_file_event('skip_existing_output', url, {
+                    'output_path': output_path,
+                    'video_id': video_id,
+                    'channel_id': channel_id
+                })
+                continue
+            
             # Try to get transcript first
             transcript = self.get_transcript(video_id)
             
             if transcript:
-                # Save transcript directly
-                output_filename = self.filename_util.get_output_filename(f"youtube_{video_id}.txt")
-                output_path = os.path.join(self.output_dir, output_filename)
+                # Create JSON document
+                doc = {
+                    'text': transcript,
+                    'filename': f"youtube_{safe_channel}_{video_id}",
+                    'filetype': 'youtube',
+                    'video_id': video_id,
+                    'channel_id': metadata['channel_id'],
+                    'channel': metadata['channel'],
+                    'title': metadata['title'],
+                    'uploader': metadata['uploader'],
+                    'uploader_id': metadata['uploader_id'],
+                    'url': url,
+                    'extraction_timestamp': datetime.datetime.now().isoformat()
+                }
                 
                 with open(output_path, 'w', encoding='utf-8') as f:
-                    f.write(transcript)
+                    json.dump(doc, f, ensure_ascii=False, indent=2)
                 
-                self.logger.log_file_event('transcript_saved', output_path)
+                self.logger.log_file_event('youtube_transcript_json_saved', output_path)
                 
             else:
-                # Download video for later processing by whisper service
-                video_filename = self.filename_util.get_output_filename(f"youtube_{video_id}.mp4")
-                video_path = os.path.join(self.video_input_dir, video_filename)
+                # Calculate expected video output path with channel ID included
+                video_filename, _, _ = self.filename_util.get_output_filename(f"youtube_{safe_channel}_{video_id}.mp4")
+                video_path = os.path.join(self.video_input_dir, str(video_filename))
                 
-                success, title = self.download_video(url, video_path)
+                # Check if video already exists (don't download again if it was already downloaded)
+                if os.path.exists(video_path) and not self.force_reprocess:
+                    self.logger.log_file_event('skip_existing_video', url, {
+                        'video_path': video_path,
+                        'video_id': video_id,
+                        'channel_id': channel_id
+                    })
+                    continue
+                
+                # Download video for later processing by whisper service
+                success, video_metadata = self.download_video(url, video_path)
                 if not success:
                     self.logger.log_anomaly('video_processing_failed', {
                         'url': url,
-                        'video_id': video_id
+                        'video_id': video_id,
+                        'channel_id': channel_id
                     })
 
         self.logger.log_system_state()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python youtube_service.py <links_file> <output_dir> <video_input_dir>")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Process YouTube links for transcription.")
+    parser.add_argument("links_file", help="Excel or CSV file containing YouTube links")
+    parser.add_argument("output_dir", help="Directory for transcript outputs")
+    parser.add_argument("video_input_dir", help="Directory for downloaded videos")
+    parser.add_argument("--force", "-f", action="store_true", help="Force reprocessing of videos that already have outputs")
+    parser.add_argument("--mapping", "-m", help="Path to mapping file for filename conversion")
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.links_file):
+        print(f"Error: Links file '{args.links_file}' does not exist.")
         sys.exit(1)
 
-    links_file = sys.argv[1]
-    output_dir = sys.argv[2]
-    video_input_dir = sys.argv[3]
-
-    if not os.path.exists(links_file):
-        print(f"Error: Links file '{links_file}' does not exist.")
-        sys.exit(1)
-
-    processor = YouTubeProcessor(links_file, output_dir, video_input_dir)
+    processor = YouTubeProcessor(
+        args.links_file, 
+        args.output_dir, 
+        args.video_input_dir,
+        mapping_file=args.mapping,
+        force_reprocess=args.force
+    )
     processor.process_youtube_links()

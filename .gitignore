@@ -1,13 +1,20 @@
-inputs/
+claude.md
+.old/
+
+*.old
+
+inputs/*
 !inputs/.gitkeep
-outputs/
+
+outputs/*
 !outputs/.gitkeep
-mappings/
-!mappings/.gitkeep
-tmp/
+
+tmp/*
 !tmp/.gitkeep
-.old
 
 
 .DS_Store
+__pycache__
+.pytest_cache
 
+.env

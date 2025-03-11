@@ -1,51 +1,75 @@
 
+
 services:
   text-extractor:
     image: text-extractor
+    container_name: text-extractor
     environment:
       - PYTHONUNBUFFERED=1
       - ENABLE_FILE_RENAMING=${ENABLE_FILE_RENAMING}
+      - FORCE_REPROCESS=${FORCE_REPROCESS:-false}
     volumes:
       - ${DOCS_INPUT}:/files:ro
       - ${DOCS_OUTPUT}:/output
       - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro
       - ./tmp:/tmp
-      # - ./logs:/output/logs
+      - ./outputs/logs:/output/logs
+      - ./tmp/reports:/output/reports
     network_mode: none
     security_opt:
       - no-new-privileges:true
       - apparmor:docker-default
-    command: ["python", "/app/text_extractor.py", "/files", "/output"]
+      # - seccomp:./seccomp.json
+      - seccomp:unconfined
+    restart: on-failure
+    mem_limit: 2g
+    command: ["sh", "-c", "python /app/text_extractor.py /files /output $${FORCE_REPROCESS:+--force}"]
     
   whisper-service:
     image: whisper-service
+    container_name: whisper-service
     volumes:
       - ${AUDIO_INPUT}:/audio:ro
       - ${VIDEO_INPUT}:/video:ro       # Add video input directory
       - ${AUDIO_OUTPUT}:/audio_out     # Rename mount point for clarity
       - ${VIDEO_OUTPUT}:/video_out     # Add video output directory
-      - ./tmp:/tmp
-      # - ./logs:/output/logs
+      - ./tmp/audio_processing:/tmp/audio_processing
+      - ./outputs/logs:/output/logs
       - whisper-models:/app/cache
+      - ./tmp/reports:/audio_out/reports
+      - ./tmp/reports:/video_out/reports
     environment:
       - PYTHONUNBUFFERED=1
       - ENABLE_FILE_RENAMING=${ENABLE_FILE_RENAMING}
-    command: ["python3", "/app/whisper_service.py", "/audio", "/video", "/audio_out", "/video_out"]
+      - FORCE_REPROCESS=${FORCE_REPROCESS:-false}
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    restart: on-failure
+    mem_limit: 4g
+    command: ["sh", "-c", "python3 /app/whisper_service.py /audio /video /audio_out /video_out $${FORCE_REPROCESS:+--force}"]
 
   youtube-dl:
     image: youtube-dl
+    container_name: youtube-dl
     volumes:
       - ${YOUTUBE_LINKS_FILE}:/input/youtube_links.csv:ro  # Fixed name and path
       - ${YOUTUBE_OUTPUT}:/output
       - ${VIDEO_INPUT}:/video_input
       - ${MAPPING_FILE}:/mapping/mapping_file.xlsx:ro
+      - ./outputs/logs:/output/logs
+      - whisper-models:/app/cache
+      - ./tmp/reports:/output/reports
     environment:
       - PYTHONUNBUFFERED=1
       - ENABLE_FILE_RENAMING=${ENABLE_FILE_RENAMING}
+      - FORCE_REPROCESS=${FORCE_REPROCESS:-false}
     security_opt:
       - no-new-privileges:true
       - apparmor:docker-default
-    command: ["python3", "/app/youtube_service.py", "/input/youtube_links.csv", "/output", "/video_input"]  # Use fixed path inside container
+    restart: on-failure
+    mem_limit: 3g
+    command: ["sh", "-c", "python3 /app/youtube_service.py /input/youtube_links.csv /output /video_input $${FORCE_REPROCESS:+--force}"]
 
 # Add a named volume for sharing the Whisper model between services
 volumes:

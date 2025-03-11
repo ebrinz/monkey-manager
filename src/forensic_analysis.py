@@ -124,6 +124,10 @@ class ForensicAnalyzer:
         if not self.system_states:
             return
 
+        # Create a reports subdirectory for non-JSON output files
+        reports_dir = os.path.join(output_dir, 'reports')
+        os.makedirs(reports_dir, exist_ok=True)
+
         df = pd.DataFrame(self.system_states)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.set_index('timestamp', inplace=True)
@@ -133,7 +137,7 @@ class ForensicAnalyzer:
         df['cpu_percent'].plot()
         plt.title('CPU Usage Over Time')
         plt.ylabel('CPU %')
-        plt.savefig(os.path.join(output_dir, 'cpu_usage.png'))
+        plt.savefig(os.path.join(reports_dir, 'cpu_usage.png'))
         plt.close()
 
         # Plot Memory usage
@@ -141,17 +145,34 @@ class ForensicAnalyzer:
         df['memory_percent'].plot()
         plt.title('Memory Usage Over Time')
         plt.ylabel('Memory %')
-        plt.savefig(os.path.join(output_dir, 'memory_usage.png'))
+        plt.savefig(os.path.join(reports_dir, 'memory_usage.png'))
         plt.close()
 
     def generate_report(self, output_dir: str) -> str:
         """Generate a comprehensive analysis report."""
         os.makedirs(output_dir, exist_ok=True)
         
+        # Create a reports subdirectory for non-JSON output files
+        reports_dir = os.path.join(output_dir, 'reports')
+        os.makedirs(reports_dir, exist_ok=True)
+        
         file_analysis = self.analyze_file_operations()
         system_analysis = self.analyze_system_behavior()
         timeline = self.generate_timeline()
         
+        # Create JSON report for outputs directory
+        report_json = {
+            "generated": datetime.now().isoformat(),
+            "file_operations": file_analysis,
+            "system_behavior": system_analysis,
+            "timeline": timeline[-10:]  # Last 10 events
+        }
+        
+        json_report_path = os.path.join(output_dir, 'forensic_report.json')
+        with open(json_report_path, 'w') as f:
+            json.dump(report_json, f, indent=2)
+        
+        # Create markdown report for reports subdirectory
         report = []
         report.append("# Forensic Analysis Report")
         report.append(f"Generated: {datetime.now().isoformat()}\n")
@@ -176,14 +197,14 @@ class ForensicAnalyzer:
         for event in timeline[-10:]:  # Show last 10 events
             report.append(f"- {event['timestamp']}: {event['type']}")
         
-        # Generate plots
+        # Generate plots in reports subdirectory
         self.plot_system_metrics(output_dir)
         
-        report_path = os.path.join(output_dir, 'forensic_report.md')
+        report_path = os.path.join(reports_dir, 'forensic_report.md')
         with open(report_path, 'w') as f:
             f.write('\n'.join(report))
             
-        return report_path
+        return json_report_path
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
