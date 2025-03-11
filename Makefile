@@ -6,9 +6,9 @@ DOCKER = docker
 VERSION = 1.0.0
 
 # Directories
-DIRS = tmp outputs outputs/logs
+DIRS = tmp outputs outputs/logs tmp/reports tmp/audio_processing
 
-.PHONY: all build clean run test help extract transcribe youtube prepare-inputs init-files logs status prune rebuild check-env single-service single-file surveymonkey-enrich surveymonkey-validate
+.PHONY: all build clean run test help extract transcribe youtube prepare-inputs init-files logs status prune rebuild check-env single-service single-file surveymonkey-enrich surveymonkey-validate cleanup-temp-files
 
 all: prepare-inputs build run
 
@@ -22,6 +22,7 @@ check-env:
 	@test -f .env || { echo "Error: .env file not found. Copy .env.example to .env and configure it."; exit 1; }
 	@grep -q "DOCS_INPUT" .env || echo "Warning: DOCS_INPUT not configured in .env"
 	@grep -q "DOCS_OUTPUT" .env || echo "Warning: DOCS_OUTPUT not configured in .env"
+	@echo "Cool..."
 
 # Check and extract zips if needed
 prepare-inputs: check-env $(DIRS)
@@ -118,12 +119,20 @@ process-youtube:
 	fi
 
 # Process everything
-run: extract youtube transcribe surveymonkey-enrich surveymonkey-validate
+run: extract youtube transcribe surveymonkey-enrich surveymonkey-validate cleanup-temp-files
 
 # Enrich JSON files with respondent IDs and metadata from Survey Monkey mapping file
 surveymonkey-enrich:
 	@echo "Enriching JSON files with respondent IDs from Survey Monkey mapping file..."
-	$(DOCKER_COMPOSE) run --rm text-extractor python /app/surveymonkey_enricher.py "/mapping/mapping_file.xlsx" "/output" "/audio_out" "/video_out" "/output/youtube"
+	@if [ "$(NON_INTERACTIVE)" = "1" ]; then \
+		$(DOCKER_COMPOSE) run --rm text-extractor python /app/surveymonkey_enricher.py "/mapping/mapping_file.xlsx" "/output" "/audio_out" "/video_out" "/output/youtube" --non-interactive; \
+	elif [ -n "$(COLUMNS)" ]; then \
+		$(DOCKER_COMPOSE) run --rm text-extractor python /app/surveymonkey_enricher.py "/mapping/mapping_file.xlsx" "/output" "/audio_out" "/video_out" "/output/youtube" --columns $(COLUMNS); \
+	elif [ "$(FILENAME_AS_COLUMN)" = "1" ]; then \
+		$(DOCKER_COMPOSE) run --rm text-extractor python /app/surveymonkey_enricher.py "/mapping/mapping_file.xlsx" "/output" "/audio_out" "/video_out" "/output/youtube" --non-interactive --columns "filename"; \
+	else \
+		$(DOCKER_COMPOSE) run -it --rm text-extractor python /app/surveymonkey_enricher.py "/mapping/mapping_file.xlsx" "/output" "/audio_out" "/video_out" "/output/youtube"; \
+	fi
 
 # Validate processing by checking for missing files against Survey Monkey mapping file
 surveymonkey-validate:
@@ -145,6 +154,15 @@ logs:
 # Stop all containers
 stop:
 	$(DOCKER_COMPOSE) down
+
+# Clean up temporary files but keep JSON outputs
+cleanup-temp-files:
+	@echo "Cleaning up temporary files but keeping JSON outputs..."
+	mkdir -p tmp/reports tmp/audio_processing
+	rm -rf tmp/audio_processing/*
+	find outputs -type f -not -name "*.json" -not -path "*/logs/*" -not -name '.gitkeep' -delete
+	@echo "Moving non-JSON files to temporary directories..."
+	find outputs -type f -not -name "*.json" -not -path "*/logs/*" -not -name '.gitkeep' -exec mv {} tmp/reports/ \;
 
 # Clean up
 clean:
@@ -177,12 +195,16 @@ help:
 	@echo "  make process-doc-file FILE=x       - Process a single document file"
 	@echo "  make process-youtube URL=x         - Process a single YouTube URL"
 	@echo "  make run                           - Run complete pipeline"
-	@echo "  make surveymonkey-enrich           - Enrich JSON files with Survey Monkey respondent IDs"
+	@echo "  make surveymonkey-enrich           - Enrich JSON files with Survey Monkey respondent IDs (interactive)"
+	@echo "  make surveymonkey-enrich NON_INTERACTIVE=1 - Enrich JSON files without interactive prompts"
+	@echo "  make surveymonkey-enrich COLUMNS=\"col1 col2\" - Enrich with specific columns"
+	@echo "  make surveymonkey-enrich FILENAME_AS_COLUMN=1 - Enrich with filename as a column"
 	@echo "  make surveymonkey-validate         - Validate files against Survey Monkey mapping file"
 	@echo "  make status                        - Show status of containers"
 	@echo "  make logs [SERVICE=x]              - View logs (optionally for specific service)"
 	@echo "  make stop                          - Stop all containers"
-	@echo "  make clean                         - Clean up generated files"
+	@echo "  make cleanup-temp-files            - Clean up temporary files but keep JSON outputs"
+	@echo "  make clean                         - Clean up all generated files"
 	@echo "  make prune                         - Clean up and remove all Docker resources"
 	@echo "  make test                          - Run tests"
 	@echo "  make help                          - Show this help"

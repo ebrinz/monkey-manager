@@ -45,6 +45,37 @@ class YouTubeProcessor:
                 'error': str(e)
             })
             return None
+            
+    def get_video_metadata(self, url):
+        """Extract metadata like channel ID from YouTube URL."""
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'extract_flat': False  # Changed to False to get full metadata
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return {
+                    'channel_id': info.get('channel_id', None),
+                    'channel': info.get('channel', info.get('uploader', None)),
+                    'title': info.get('title', 'unknown'),
+                    'uploader': info.get('uploader', None),
+                    'uploader_id': info.get('uploader_id', None)
+                }
+        except Exception as e:
+            self.logger.log_anomaly('metadata_extraction_error', {
+                'url': url,
+                'error': str(e)
+            })
+            return {
+                'channel_id': None, 
+                'channel': None,
+                'title': None, 
+                'uploader': None,
+                'uploader_id': None
+            }
 
     def get_transcript(self, video_id):
         """Try to get transcript using youtube_transcript_api."""
@@ -89,12 +120,20 @@ class YouTubeProcessor:
             self.logger.log_file_event('youtube_download_start', url)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'unknown')
+                metadata = {
+                    'title': info.get('title', 'unknown'),
+                    'channel_id': info.get('channel_id', None),
+                    'channel': info.get('channel', info.get('uploader', None)),
+                    'uploader': info.get('uploader', None),
+                    'uploader_id': info.get('uploader_id', None)
+                }
             self.logger.log_file_event('youtube_download_complete', output_path, {
-                'title': title,
-                'duration': info.get('duration', 0)
+                'title': metadata['title'],
+                'duration': info.get('duration', 0),
+                'channel_id': metadata['channel_id'],
+                'channel': metadata['channel']
             })
-            return True, title
+            return True, metadata
         except Exception as e:
             self.logger.log_anomaly('youtube_download_error', {
                 'url': url,
@@ -136,15 +175,24 @@ class YouTubeProcessor:
             if not video_id:
                 continue
 
-            # Calculate expected output path
-            output_filename = self.filename_util.get_output_filename(f"youtube_{video_id}.json")
-            output_path = os.path.join(self.output_dir, output_filename)
+            # Get metadata for all videos
+            metadata = self.get_video_metadata(url)
+            
+            # Create a safe channel identifier for filenames
+            channel_id = metadata['channel_id'] or 'unknown_channel'
+            channel_name = metadata['channel'] or metadata['uploader'] or 'unknown_channel'
+            safe_channel = channel_id.replace('/', '_').replace('\\', '_')
+            
+            # Calculate expected output path with channel ID included
+            output_filename, _, _ = self.filename_util.get_output_filename(f"youtube_{safe_channel}_{video_id}.json")
+            output_path = os.path.join(self.output_dir, str(output_filename))
             
             # Check if output already exists
             if os.path.exists(output_path) and not self.force_reprocess:
                 self.logger.log_file_event('skip_existing_output', url, {
                     'output_path': output_path,
-                    'video_id': video_id
+                    'video_id': video_id,
+                    'channel_id': channel_id
                 })
                 continue
             
@@ -155,9 +203,14 @@ class YouTubeProcessor:
                 # Create JSON document
                 doc = {
                     'text': transcript,
-                    'filename': f"youtube_{video_id}",
+                    'filename': f"youtube_{safe_channel}_{video_id}",
                     'filetype': 'youtube',
                     'video_id': video_id,
+                    'channel_id': metadata['channel_id'],
+                    'channel': metadata['channel'],
+                    'title': metadata['title'],
+                    'uploader': metadata['uploader'],
+                    'uploader_id': metadata['uploader_id'],
                     'url': url,
                     'extraction_timestamp': datetime.datetime.now().isoformat()
                 }
@@ -168,24 +221,26 @@ class YouTubeProcessor:
                 self.logger.log_file_event('youtube_transcript_json_saved', output_path)
                 
             else:
-                # Calculate expected video output path
-                video_filename = self.filename_util.get_output_filename(f"youtube_{video_id}.mp4")
-                video_path = os.path.join(self.video_input_dir, video_filename)
+                # Calculate expected video output path with channel ID included
+                video_filename, _, _ = self.filename_util.get_output_filename(f"youtube_{safe_channel}_{video_id}.mp4")
+                video_path = os.path.join(self.video_input_dir, str(video_filename))
                 
                 # Check if video already exists (don't download again if it was already downloaded)
                 if os.path.exists(video_path) and not self.force_reprocess:
                     self.logger.log_file_event('skip_existing_video', url, {
                         'video_path': video_path,
-                        'video_id': video_id
+                        'video_id': video_id,
+                        'channel_id': channel_id
                     })
                     continue
                 
                 # Download video for later processing by whisper service
-                success, title = self.download_video(url, video_path)
+                success, video_metadata = self.download_video(url, video_path)
                 if not success:
                     self.logger.log_anomaly('video_processing_failed', {
                         'url': url,
-                        'video_id': video_id
+                        'video_id': video_id,
+                        'channel_id': channel_id
                     })
 
         self.logger.log_system_state()

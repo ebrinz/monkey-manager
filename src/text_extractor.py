@@ -38,9 +38,9 @@ class TextExtractor:
                 if ext_lower not in ['.pdf', '.docx']:
                     continue
                 
-                # Check if output file already exists
-                new_filename = self.filename_util.get_output_filename(fname, '.json')
-                json_path = os.path.join(self.output_dir, new_filename)
+                # Get output filename and respondent info
+                new_filename, respondent_id, col_num = self.filename_util.get_output_filename(fname, '.json')
+                json_path = os.path.join(self.output_dir, str(new_filename))
                 
                 # Skip if output already exists (unless force flag is set)
                 if os.path.exists(json_path) and not self.force_reprocess:
@@ -66,6 +66,11 @@ class TextExtractor:
                         'original_path': file_path,
                         'extraction_timestamp': datetime.datetime.now().isoformat()
                     }
+                    
+                    # Add respondent info if available from mapping
+                    if respondent_id:
+                        doc['respondent_id'] = respondent_id
+                        doc['file_column'] = col_num
                     
                     # Save as JSON
                     with open(json_path, "w", encoding="utf-8") as out_f:

@@ -4,7 +4,10 @@ import json
 import pandas as pd
 import glob
 import re
+import pexpect
+import tempfile
 from pathlib import Path
+from typing import List, Optional, Dict
 from forensic_logger import ForensicLogger
 
 class SurveyMonkeyEnricher:
@@ -14,7 +17,9 @@ class SurveyMonkeyEnricher:
     from the mapping file to the extracted JSON documents.
     """
     
-    def __init__(self, mapping_file, output_dirs, logger_path="/output/logs"):
+    def __init__(self, mapping_file, output_dirs, logger_path="/output/logs", 
+                 selected_columns: Optional[List[str]] = None, 
+                 interactive: bool = True):
         """
         Initialize the enricher with mapping file and output directories.
         
@@ -22,10 +27,15 @@ class SurveyMonkeyEnricher:
             mapping_file: Path to the Excel mapping file
             output_dirs: List of directories containing JSON files to enrich
             logger_path: Path for forensic logger output
+            selected_columns: Predefined list of columns to include from mapping file
+            interactive: Whether to interactively ask user which columns to include
         """
         self.mapping_file = mapping_file
         self.output_dirs = output_dirs if isinstance(output_dirs, list) else [output_dirs]
         self.logger = ForensicLogger(logger_path)
+        self.selected_columns = selected_columns
+        self.interactive = interactive
+        self.exclude_columns = []  # Will be populated with file columns
         
     def normalize_filename(self, filename):
         """Normalize filename for comparison by removing extensions and special characters."""
@@ -55,6 +65,108 @@ class SurveyMonkeyEnricher:
                 'error': str(e)
             })
             return None
+    
+    def interactive_column_selection(self, mapping_df, file_columns):
+        """
+        Interactively ask user which columns from the mapping file to include as attributes
+        using pexpect to handle the interactive session.
+        
+        Args:
+            mapping_df: DataFrame containing mapping data
+            file_columns: List of file columns to exclude from selection
+            
+        Returns:
+            List of selected column names to include as attributes
+        """
+        # Always include respondent_id
+        selected = ["respondent_id", "Respondent ID"]
+        
+        # Get available columns (excluding file columns)
+        available_columns = [col for col in mapping_df.columns 
+                            if col.lower() not in [c.lower() for c in file_columns]
+                            and col not in selected]
+        
+        if not available_columns:
+            self.logger.log_file_event('no_metadata_columns', {
+                'reason': 'Only file columns found in mapping file'
+            })
+            return selected
+        
+        if not self.interactive:
+            if self.selected_columns:
+                return selected + self.selected_columns
+            else:
+                # Default to including all columns
+                return selected + available_columns
+        
+        # Create a temporary script for the interactive session
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.py') as temp:
+            temp.write("""
+import sys
+
+def main():
+    cols = sys.argv[1].split(',')
+    print("\\nAvailable columns in mapping file:\\n")
+    
+    for i, col in enumerate(cols, 1):
+        print(f"{i}. {col}")
+    
+    print("\\nEnter column numbers to include (comma-separated, 'all' for all, 'none' for none):")
+    selection = input("> ")
+    
+    if selection.lower() == 'all':
+        print(','.join(cols))
+    elif selection.lower() == 'none':
+        print('')
+    else:
+        try:
+            indices = [int(i.strip()) - 1 for i in selection.split(',')]
+            selected = [cols[i] for i in indices if 0 <= i < len(cols)]
+            print(','.join(selected))
+        except:
+            print('')
+
+if __name__ == "__main__":
+    main()
+""")
+            script_path = temp.name
+        
+        try:
+            # Run the interactive script
+            cmd = f"python {script_path} {','.join(available_columns)}"
+            child = pexpect.spawn(cmd)
+            child.expect("> ")
+            
+            # Send empty line to get the prompt
+            child.sendline("")
+            
+            # Capture the output
+            child.expect(pexpect.EOF)
+            output = child.before.decode().strip().split('\n')[-1]
+            
+            # Process selected columns
+            if output:
+                additional_columns = output.split(',')
+                self.logger.log_file_event('columns_selected', {
+                    'selected_columns': additional_columns
+                })
+                return selected + additional_columns
+            else:
+                self.logger.log_file_event('no_columns_selected', {})
+                return selected
+                
+        except Exception as e:
+            self.logger.log_anomaly('column_selection_error', {
+                'error': str(e)
+            })
+            # Default to just respondent_id on error
+            return selected
+        finally:
+            # Clean up the temporary script
+            try:
+                os.unlink(script_path)
+            except:
+                pass
             
     def find_json_files(self):
         """Find all JSON files in the output directories."""
@@ -114,12 +226,20 @@ class SurveyMonkeyEnricher:
                        if re.match(r'file\s*#?\s*\d+', col.lower()) or 
                        re.match(r'file', col.lower())]
         
+        self.exclude_columns = file_columns
+        
         if not file_columns:
             self.logger.log_anomaly('no_file_columns_found', {
                 'available_columns': list(mapping_df.columns)
             })
             print("Warning: No file columns found in mapping file. Expected columns containing 'File' text.")
             return
+            
+        # Interactive column selection
+        selected_columns = self.interactive_column_selection(mapping_df, file_columns)
+        self.logger.log_file_event('column_selection_complete', {
+            'selected_columns': selected_columns
+        })
         
         # For each row in mapping file
         enrichment_count = 0
@@ -128,12 +248,11 @@ class SurveyMonkeyEnricher:
             if not respondent_id:
                 continue
                 
-            # Extract useful metadata columns (exclude file columns)
+            # Extract selected metadata columns (exclude file columns)
             metadata = {}
-            for col in mapping_df.columns:
-                if col.lower() not in [c.lower() for c in file_columns]:
-                    if pd.notna(row[col]) and row[col] != '':
-                        metadata[col] = row[col]
+            for col in selected_columns:
+                if col in mapping_df.columns and pd.notna(row.get(col)) and row.get(col) != '':
+                    metadata[col] = row[col]
             
             # Look for files associated with this respondent
             for file_col in file_columns:
@@ -183,16 +302,27 @@ class SurveyMonkeyEnricher:
         })
         
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python surveymonkey_enricher.py <mapping_file> <output_dir1> [<output_dir2> ...]")
-        sys.exit(1)
-        
-    mapping_file = sys.argv[1]
-    output_dirs = sys.argv[2:]
+    import argparse
     
-    if not os.path.exists(mapping_file):
-        print(f"Error: Mapping file '{mapping_file}' does not exist.")
+    parser = argparse.ArgumentParser(description="Enrich extracted JSON files with Survey Monkey metadata")
+    parser.add_argument("mapping_file", help="Path to Survey Monkey mapping file (Excel or CSV)")
+    parser.add_argument("output_dirs", nargs="+", help="One or more directories containing JSON files to enrich")
+    parser.add_argument("--non-interactive", action="store_true", help="Run without interactive column selection")
+    parser.add_argument("--columns", nargs="+", help="Specific columns to include (if not using interactive mode)")
+    parser.add_argument("--log-path", default="/output/logs", help="Path for forensic logs")
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.mapping_file):
+        print(f"Error: Mapping file '{args.mapping_file}' does not exist.")
         sys.exit(1)
         
-    enricher = SurveyMonkeyEnricher(mapping_file, output_dirs)
+    enricher = SurveyMonkeyEnricher(
+        mapping_file=args.mapping_file,
+        output_dirs=args.output_dirs,
+        logger_path=args.log_path,
+        selected_columns=args.columns,
+        interactive=not args.non_interactive
+    )
+    
     enricher.enrich_json_files()

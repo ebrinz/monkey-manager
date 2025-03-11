@@ -1,12 +1,17 @@
 import os
 import sys
 import json
-import whisper
 import subprocess
 import datetime
 from pathlib import Path
 from forensic_logger import ForensicLogger
 from file_renamer import FilenamingUtility
+
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
 
 class WhisperTranscriber:
     def __init__(self, audio_input_dir, video_input_dir, audio_output_dir, video_output_dir, mapping_file=None, force_reprocess=False):
@@ -21,13 +26,22 @@ class WhisperTranscriber:
         enable_renaming = os.environ.get('ENABLE_FILE_RENAMING', 'true').lower() == 'true'
         self.filename_util = FilenamingUtility(mapping_file, enable_renaming)
         
-        # Initialize whisper model
-        self.model = whisper.load_model("base")
+        # Initialize whisper model if available
+        if WHISPER_AVAILABLE:
+            self.model = whisper.load_model("base")
+        else:
+            self.model = None
+            self.logger.log_anomaly('whisper_not_available', {
+                'error': 'Whisper module is not installed'
+            })
         
         # Create necessary directories
         os.makedirs(audio_output_dir, exist_ok=True)
         os.makedirs(video_output_dir, exist_ok=True)
-        os.makedirs("/tmp/audio_processing", exist_ok=True)
+        
+        # Create temporary directory outside of outputs directory
+        self.temp_dir = "/tmp/audio_processing"
+        os.makedirs(self.temp_dir, exist_ok=True)
 
     def extract_audio_from_video(self, video_path, audio_path):
         """Extract audio from video file using ffmpeg."""
@@ -53,10 +67,18 @@ class WhisperTranscriber:
             })
             return False
 
-    def transcribe_audio(self, audio_path, output_path, file_type="audio"):
+    def transcribe_audio(self, audio_path, output_path, file_type="audio", respondent_id=None, col_num=None):
         """Transcribe audio file using Whisper."""
         try:
             self.logger.log_file_event('transcription_start', audio_path)
+            
+            # Check if whisper is available
+            if not WHISPER_AVAILABLE or self.model is None:
+                self.logger.log_anomaly('whisper_not_available', {
+                    'file': audio_path,
+                    'error': 'Whisper module is not installed'
+                })
+                return False
             
             # Transcribe
             result = self.model.transcribe(audio_path)
@@ -73,6 +95,11 @@ class WhisperTranscriber:
                 'language': result.get('language', 'unknown'),
                 'transcription_timestamp': datetime.datetime.now().isoformat()
             }
+            
+            # Add respondent info if available
+            if respondent_id:
+                doc['respondent_id'] = respondent_id
+                doc['file_column'] = col_num
             
             # Write JSON document
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -95,10 +122,16 @@ class WhisperTranscriber:
         try:
             fname = os.path.basename(file_path)
             ext = os.path.splitext(fname)[1].lower()
-            new_filename = self.filename_util.get_output_filename(fname, '.json')
-            output_path = os.path.join(output_dir, new_filename)
+            new_filename, respondent_id, col_num = self.filename_util.get_output_filename(fname, '.json')
+            output_path = os.path.join(output_dir, str(new_filename))
             
-            return self.transcribe_audio(file_path, output_path, file_type=ext.lstrip('.'))
+            return self.transcribe_audio(
+                file_path, 
+                output_path, 
+                file_type=ext.lstrip('.'),
+                respondent_id=respondent_id,
+                col_num=col_num
+            )
         except Exception as e:
             self.logger.log_anomaly('audio_processing_error', {
                 'file': file_path,
@@ -111,7 +144,7 @@ class WhisperTranscriber:
         try:
             fname = os.path.basename(file_path)
             base_name = Path(file_path).stem
-            temp_audio = os.path.join("/tmp/audio_processing", f"{base_name}.wav")
+            temp_audio = os.path.join(self.temp_dir, f"{base_name}.wav")
             ext = os.path.splitext(fname)[1].lower()
             
             # Extract audio
@@ -119,11 +152,17 @@ class WhisperTranscriber:
                 return False
             
             # Transcribe
-            new_filename = self.filename_util.get_output_filename(fname, '.json')
-            output_path = os.path.join(output_dir, new_filename)
-            success = self.transcribe_audio(temp_audio, output_path, file_type=ext.lstrip('.'))
+            new_filename, respondent_id, col_num = self.filename_util.get_output_filename(fname, '.json')
+            output_path = os.path.join(output_dir, str(new_filename))
+            success = self.transcribe_audio(
+                temp_audio, 
+                output_path, 
+                file_type=ext.lstrip('.'),
+                respondent_id=respondent_id,
+                col_num=col_num
+            )
             
-            # Cleanup
+            # Cleanup temporary file
             try:
                 os.remove(temp_audio)
             except Exception as e:
@@ -158,9 +197,9 @@ class WhisperTranscriber:
                 output_subdir = os.path.join(output_dir, rel_path)
                 os.makedirs(output_subdir, exist_ok=True)
                 
-                # Check if output file already exists
-                new_filename = self.filename_util.get_output_filename(fname, '.json')
-                output_path = os.path.join(output_subdir, new_filename)
+                # Ensure only JSON files will be written to output directory
+                new_filename, respondent_id, col_num = self.filename_util.get_output_filename(fname, '.json')
+                output_path = os.path.join(output_subdir, str(new_filename))
                 
                 if os.path.exists(output_path) and not self.force_reprocess:
                     self.logger.log_file_event('skip_existing_output', file_path, {
@@ -182,15 +221,40 @@ class WhisperTranscriber:
         audio_formats = ['.mp3', '.wav', '.m4a']
         video_formats = ['.mp4', '.mov', '.avi', '.mkv']
 
-        # Process audio directory
-        if os.path.exists(self.audio_input_dir):
-            self.process_directory(self.audio_input_dir, self.audio_output_dir, audio_formats)
-        
-        # Process video directory
-        if os.path.exists(self.video_input_dir):
-            self.process_directory(self.video_input_dir, self.video_output_dir, video_formats)
-
+        try:
+            # Process audio directory
+            if os.path.exists(self.audio_input_dir):
+                self.process_directory(self.audio_input_dir, self.audio_output_dir, audio_formats)
+            
+            # Process video directory
+            if os.path.exists(self.video_input_dir):
+                self.process_directory(self.video_input_dir, self.video_output_dir, video_formats)
+        finally:
+            # Clean up any temporary files
+            self.cleanup_temp_files()
+            
         self.logger.log_system_state()
+        
+    def cleanup_temp_files(self):
+        """Clean up any temporary files left in the temporary directory."""
+        try:
+            if os.path.exists(self.temp_dir):
+                for filename in os.listdir(self.temp_dir):
+                    file_path = os.path.join(self.temp_dir, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            self.logger.log_file_event('temp_file_removed', file_path)
+                    except Exception as e:
+                        self.logger.log_anomaly('temp_file_cleanup_error', {
+                            'file': file_path,
+                            'error': str(e)
+                        })
+        except Exception as e:
+            self.logger.log_anomaly('temp_dir_cleanup_error', {
+                'dir': self.temp_dir,
+                'error': str(e)
+            })
 
 if __name__ == "__main__":
     import argparse

@@ -21,7 +21,8 @@ RUN pip install --no-cache-dir \
 WORKDIR /app
 
 # Copy the Python scripts from src directory
-COPY src/text_extractor.py src/forensic_logger.py src/file_renamer.py src/surveymonkey_enricher.py src/surveymonkey_validator.py ./
+# Copy the Python scripts
+COPY src/text_extractor.py src/forensic_logger.py src/file_renamer.py ./
 
 # Create log directory
 RUN mkdir -p /output/logs /output/analysis
